@@ -1,0 +1,725 @@
+import { getErrorMessage } from "./errors";
+import { useEffect, useRef, useState } from "react";
+import {
+  Alert,
+  Button,
+  Dropdown,
+  Input,
+  Modal,
+  Space,
+  Typography,
+} from "antd";
+import { api, ApiError, conversationStream } from "./api";
+import {
+  buildTimeline,
+  canRetry,
+  latestActions,
+  type Action,
+  type Snapshot,
+  type Turn,
+} from "./conversation-types";
+import { ConversationActionCard } from "./ConversationActionCard";
+
+type Pending = {
+  path: string;
+  body: unknown;
+  requestId: string;
+  turnId?: string;
+  mode: "edit" | "read";
+  sentText?: string;
+};
+
+// Error codes with dedicated guidance on top of the server's message.
+const turnErrorHints: Record<string, string> = {
+  context_too_large: "对话内容已超过模型上下文上限，请新建会话继续，不建议反复重试。",
+  model_timeout: "模型响应超时，可在对话未继续时点击“重试本轮”。",
+  agent_loop_limit: "本轮处理达到次数上限，可缩小问题或发送新消息。",
+  model_tool_calling_unsupported: "当前模型连接不支持工具调用，请检查 AI 配置。",
+};
+
+export function Conversation({
+  owner,
+  onSend,
+  selectedDate,
+  onLock,
+  refresh,
+  names,
+  newChatSignal,
+}: {
+  owner: string;
+  onSend?: () => void;
+  selectedDate?: string;
+  onLock: (locked: boolean) => void;
+  refresh: () => Promise<void>;
+  names: Record<string, string>;
+  newChatSignal?: number;
+}) {
+  const [deleting, setDeleting] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const [renaming, setRenaming] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [managing, setManaging] = useState(false);
+  const [historyMounted, setHistoryMounted] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [items, setItems] = useState<{ id: string; title: string }[]>([]);
+  const [id, setIdState] = useState<string | null>(null),
+    [data, setData] = useState<Snapshot | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [notice, setNotice] = useState("");
+  const [online, setOnline] = useState<any>(null);
+  // Button request in flight; one X-Request-ID per action and kind is reused
+  // across retries so a repeated click never duplicates the write.
+  const [working, setWorking] = useState<
+    { actionId: string; kind: "confirm" | "cancel" } | null
+  >(null);
+  const actionRequestIds = useRef<Map<string, string>>(new Map());
+  const idRef = useRef<string | null>(null);
+  const pending = useRef<Pending | null>(null);
+  const alive = useRef(true);
+  const previousSignal = useRef(newChatSignal);
+  const nearBottom = useRef(true);
+  const end = useRef<HTMLDivElement>(null);
+  const [newReply, setNewReply] = useState(false);
+  const setId = (value: string | null) => {
+    idRef.current = value;
+    setIdState(value);
+  };
+  useEffect(() => {
+    const check = () => {
+      nearBottom.current =
+        window.innerHeight + window.scrollY >=
+        document.documentElement.scrollHeight - 160;
+    };
+    window.addEventListener("scroll", check, { passive: true });
+    return () => window.removeEventListener("scroll", check);
+  }, []);
+  useEffect(() => {
+    if (!data?.messages.length) return;
+    if (nearBottom.current)
+      end.current?.scrollIntoView({
+        block: "end",
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "instant"
+          : "smooth",
+      });
+    else setNewReply(true);
+  }, [data?.messages.length]);
+  const storage = "fitplan-conversation-" + owner;
+  const turnKey = "fitplan-turn-" + owner;
+  const resetCurrent = () => {
+    setId(null);
+    setData(null);
+    setWorking(null);
+    setText("");
+    setError("");
+    setNotice("");
+    setHistoryOpen(false);
+    pending.current = null;
+    onLock(false);
+  };
+  const startNewChat = () => {
+    localStorage.removeItem(storage);
+    resetCurrent();
+  };
+  const load = async (target?: string | null): Promise<Snapshot | null> => {
+    const key = target ?? idRef.current;
+    if (!key) return null;
+    let value: Snapshot;
+    try {
+      value = await api<Snapshot>("/conversations/" + key);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        // Stale migrated IDs disappear instead of showing a dead restore button.
+        localStorage.removeItem(storage);
+        localStorage.removeItem(turnKey);
+        if (idRef.current === key) {
+          setId(null);
+          setData(null);
+          pending.current = null;
+          onLock(false);
+        }
+        throw new ApiError(404, {
+          code: "not_found",
+          message: "该对话不存在或已删除，已返回新对话。",
+        });
+      }
+      throw e;
+    }
+    // A response for a conversation the user already left must not win.
+    if (alive.current && idRef.current === key) setData(value);
+    return idRef.current === key ? value : null;
+  };
+  useEffect(() => {
+    alive.current = true;
+    // A page refresh starts with a blank conversation. History is opened explicitly.
+    setId(null);
+    setData(null);
+    setWorking(null);
+    setHistoryOpen(false);
+    pending.current = null;
+    onLock(false);
+    void api("/ai/status")
+      .then((value) => {
+        if (alive.current) setOnline(value);
+      })
+      .catch(() => {});
+    return () => {
+      alive.current = false;
+    };
+  }, [owner]);
+  useEffect(() => {
+    if (newChatSignal === previousSignal.current) return;
+    previousSignal.current = newChatSignal;
+    localStorage.removeItem(storage);
+    resetCurrent();
+  }, [newChatSignal]);
+  useEffect(() => {
+    if (historyOpen) return;
+    const timer = setTimeout(
+      () => setHistoryMounted(false),
+      matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 240,
+    );
+    return () => clearTimeout(timer);
+  }, [historyOpen]);
+  useEffect(() => {
+    if (!historyOpen) return;
+    let live = true;
+    void api("/conversations?limit=200")
+      .then((value) => {
+        if (live) setItems(value.items);
+      })
+      .catch((e) => {
+        if (live) setError(getErrorMessage(e));
+      });
+    return () => {
+      live = false;
+    };
+  }, [historyOpen]);
+  const observe = async (
+    p: Pending,
+    method: "GET" | "POST",
+    target: string,
+  ) => {
+    setBusy(true);
+    setWorking(null);
+    onLock(p.mode === "edit");
+    setError("");
+    try {
+      const result: Turn = await conversationStream(
+        p.turnId && method === "GET" ? `/turns/${p.turnId}/events` : p.path,
+        method,
+        p.body,
+        p.requestId,
+        (turnId) => {
+          p.turnId = turnId;
+          localStorage.setItem(turnKey, turnId);
+        },
+      );
+      if (!alive.current) return;
+      const snapshot = await load(target);
+      // completed only means the turn ended; confirmation_required waits for
+      // the card button, and nothing is written during the turn itself.
+      if (result.status !== "succeeded") {
+        const hint = result.error ? turnErrorHints[result.error] : undefined;
+        setError(
+          "本轮未完成：" +
+            getErrorMessage(new Error(result.error_message || "")) +
+            "。" +
+            (hint || "输入和对话信息均保留。"),
+        );
+      } else {
+        setText((current) => (current === p.sentText ? "" : current));
+      }
+      pending.current = null;
+      localStorage.removeItem(turnKey);
+      if (!snapshot && idRef.current === target) throw Error("会话恢复失败");
+    } catch (e) {
+      if (alive.current)
+        setError(getErrorMessage(e) + "。请恢复轮次；不会自动重新调用模型。");
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+        pending.current = null;
+      // If accepted was received, keep the input locked until recovery establishes a terminal state.
+      if (p.turnId) return;
+    } finally {
+      if (alive.current) {
+        setBusy(false);
+        onLock(!!pending.current && pending.current.mode === "edit");
+      }
+    }
+  };
+  const send = async () => {
+    onSend?.();
+    setError("");
+    setBusy(true);
+    try {
+      let target = idRef.current;
+      if (!target) {
+        const created = await api<{ id: string }>("/conversations", "POST", {
+          title: text.slice(0, 30) || "训练对话",
+        });
+        target = created.id;
+        setId(target);
+        localStorage.setItem(storage, target);
+        setItems((await api("/conversations?limit=200")).items);
+      }
+      const p: Pending = {
+        path: `/conversations/${target}/messages`,
+        body: {
+          text,
+          selected_date: selectedDate || null,
+          mode: "edit",
+        },
+        requestId: crypto.randomUUID(),
+        mode: "edit",
+        sentText: text,
+      };
+      pending.current = p;
+      await observe(p, "POST", target);
+    } catch (e) {
+      setError(getErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const recover = async () => {
+    const p = pending.current;
+    if (p && idRef.current)
+      return observe(p, p.turnId ? "GET" : "POST", idRef.current);
+    if (idRef.current) {
+      await load();
+      onLock(false);
+    }
+  };
+  // Confirm/cancel never calls the model: a plain JSON request against the
+  // action, whose 200 response still may carry status=conflict/failed.
+  const decide = async (requested: Action, kind: "confirm" | "cancel") => {
+    const conversationId = idRef.current;
+    if (!conversationId) return;
+    // Read the current row instead of a possibly stale rendered copy.
+    const action = latestActions(data?.actions || []).get(requested.action_id);
+    if (!action || action.status !== "pending") {
+      await safe(async () => {
+        await load();
+      });
+      return;
+    }
+    let requestId = actionRequestIds.current.get(action.action_id + kind);
+    if (!requestId) {
+      requestId = crypto.randomUUID();
+      actionRequestIds.current.set(action.action_id + kind, requestId);
+    }
+    setError("");
+    setNotice("");
+    setWorking({ actionId: action.action_id, kind });
+    try {
+      const updated = await api<Action>(
+        `/conversation-actions/${action.action_id}/${kind}`,
+        "POST",
+        { version: action.version },
+        requestId,
+      );
+      if (idRef.current !== conversationId) return;
+      if (kind === "confirm" && updated.status === "confirmed") {
+        let refreshed = true;
+        try {
+          await refresh();
+        } catch {
+          refreshed = false;
+        }
+        await load();
+        setNotice(
+          refreshed
+            ? ""
+            : "操作已执行，但界面刷新失败，请手动核对训练与设置数据。",
+        );
+      } else {
+        // cancelled/conflict/failed only need the conversation back: the
+        // event message and the card's terminal state carry the outcome.
+        await load();
+      }
+    } catch (e) {
+      if (idRef.current === conversationId)
+        setError(getErrorMessage(e));
+      // A stale card (409) or vanished action (404): the reloaded snapshot
+      // disables the outdated buttons with server state.
+      await safe(async () => {
+        await load();
+      });
+    } finally {
+      if (alive.current) setWorking(null);
+    }
+  };
+  const safe = async (fn: () => Promise<void>) => {
+    try {
+      setError("");
+      await fn();
+    } catch (e) {
+      setError(getErrorMessage(e));
+    }
+  };
+  const timeline = data ? buildTimeline(data) : [];
+  const lastTurn = data?.turns[data.turns.length - 1];
+  const retryable = lastTurn && canRetry(lastTurn, data!) ? lastTurn : null;
+  const requestInFlight = busy || !!pending.current || !!working;
+  return (
+    <Space direction="vertical" style={{ width: "100%" }} size="middle">
+      {error && (
+        <Alert
+          type="error"
+          message={error}
+          action={
+            pending.current ? (
+              <Button onClick={() => void safe(recover)}>恢复轮次</Button>
+            ) : undefined
+          }
+        />
+      )}
+      {notice && <Alert type="warning" message={notice} />}
+      <div aria-label="对话消息" aria-live="polite">
+        {timeline.map((item) => {
+          if (item.kind === "card")
+            return (
+              <ConversationActionCard
+                key={item.action.action_id}
+                action={item.action}
+                names={names}
+                working={working}
+                onConfirm={(action) => void safe(() => decide(action, "confirm"))}
+                onCancel={(action) => void safe(() => decide(action, "cancel"))}
+              />
+            );
+          const message = item.message;
+          return (
+            <div
+              key={message.id}
+              className={`message-bubble ${message.role}`}
+              style={{ marginBottom: 12 }}
+            >
+              {message.role === "event" ? (
+                <Typography.Text type="secondary">
+                  {message.content}
+                </Typography.Text>
+              ) : (
+                <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+                  {message.content}
+                </Typography.Paragraph>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {retryable && (
+        <Space>
+          <Typography.Text type="warning">
+            未完成轮次：{getErrorMessage(new Error(retryable.error_message || ""))}
+          </Typography.Text>
+          <Button
+            disabled={requestInFlight}
+            onClick={() =>
+              void safe(async () => {
+                const p: Pending = {
+                  path: `/turns/${retryable.id}/retry`,
+                  body: {},
+                  requestId: crypto.randomUUID(),
+                  mode: retryable.mode,
+                };
+                pending.current = p;
+                await observe(p, "POST", idRef.current!);
+              })
+            }
+          >
+            重试本轮
+          </Button>
+        </Space>
+      )}
+      <div ref={end} />
+      {newReply && (
+        <Button
+          onClick={() => {
+            end.current?.scrollIntoView({ behavior: "smooth" });
+            setNewReply(false);
+          }}
+        >
+          有新回复 ↓
+        </Button>
+      )}
+      <div className="conversation-controls">
+        <div className="composer-row">
+          <Button
+            type="text"
+            className="history-toggle"
+            aria-label="展开历史对话"
+            aria-expanded={historyOpen}
+            onClick={() => {
+              if (historyOpen) setHistoryOpen(false);
+              else {
+                setHistoryMounted(true);
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => setHistoryOpen(true)),
+                );
+              }
+            }}
+            icon={
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                aria-hidden="true"
+              >
+                <path d="M4 6h16M4 12h16M4 18h16" strokeLinecap="round" />
+              </svg>
+            }
+          />
+
+          <Button
+            type="text"
+            className="new-chat"
+            aria-label="新对话"
+            disabled={requestInFlight}
+            onClick={startNewChat}
+            icon={
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            }
+          />
+
+          <div className="chat-composer">
+            <Input.TextArea
+              aria-label="训练消息"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={(e) => {
+                if (
+                  e.key === "Enter" &&
+                  !e.shiftKey &&
+                  !e.nativeEvent.isComposing &&
+                  text.trim() &&
+                  !requestInFlight
+                ) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              maxLength={8000}
+              autoSize={{ minRows: 1, maxRows: 6 }}
+              placeholder="例如：今天卧推60公斤两组8次，65公斤两组6次"
+            />
+            <Button
+              className="send-arrow"
+              type="primary"
+              aria-label="发送消息"
+              title="发送"
+              loading={busy}
+              disabled={!text.trim() || requestInFlight}
+              onClick={() => void send()}
+              icon={
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m6 12 6-6 6 6M12 6v13" />
+                </svg>
+              }
+            />
+          </div>
+        </div>
+        <div
+          className={`history-reveal ${historyOpen ? "open" : ""}`}
+          aria-hidden={!historyOpen}
+          inert={!historyOpen}
+        >
+          <div className="history-reveal-inner">
+            {historyMounted && (
+              <section
+                className="conversation-history"
+                aria-label="历史对话面板"
+              >
+                {online && !online.configured && (
+                  <Alert
+                    type="warning"
+                    message="模型尚未配置，可以继续手动记录。"
+                  />
+                )}
+                <div className="history-heading">
+                  <strong>历史对话</strong>
+                </div>
+                {items.length === 0 && <p>还没有历史对话</p>}
+                <div className="history-list">
+                  {items.map((item) => (
+                    <div className="history-row" key={item.id}>
+                      <button
+                        type="button"
+                        disabled={requestInFlight}
+                        className={item.id === id ? "active" : ""}
+                        onClick={() =>
+                          void safe(async () => {
+                            setWorking(null);
+                            setId(item.id);
+                            localStorage.setItem(storage, item.id);
+                            const snapshot = await load(item.id);
+                            setHistoryOpen(false);
+                            onSend?.();
+                            const active = snapshot?.turns.find(
+                              (t) => t.status === "running",
+                            );
+                            if (active) {
+                              const p: Pending = {
+                                path: `/turns/${active.id}/events`,
+                                body: null,
+                                requestId: crypto.randomUUID(),
+                                turnId: active.id,
+                                mode: active.mode,
+                              };
+                              pending.current = p;
+                              await observe(p, "GET", item.id);
+                            }
+                          })
+                        }
+                      >
+                        <span>{item.title}</span>
+                      </button>
+                      <Dropdown
+                        trigger={["click"]}
+                        menu={{
+                          items: [
+                            { key: "rename", label: "重命名" },
+                            { key: "delete", label: "删除", danger: true },
+                          ],
+                          onClick: ({ key }) => {
+                            if (key === "rename") {
+                              setRenaming(item);
+                              setRenameTitle(item.title);
+                            } else setDeleting(item);
+                          },
+                        }}
+                      >
+                        <Button
+                          type="text"
+                          className="history-menu"
+                          aria-label={`管理对话 ${item.title}`}
+                          disabled={busy || managing || !!pending.current}
+                        >
+                          ···
+                        </Button>
+                      </Dropdown>
+                    </div>
+                  ))}
+                </div>
+                {id && (
+                  <Button
+                    type="text"
+                    disabled={busy}
+                    onClick={() => void safe(recover)}
+                  >
+                    恢复轮次
+                  </Button>
+                )}
+              </section>
+            )}
+          </div>
+        </div>
+      </div>
+      <Modal
+        centered
+        width={420}
+        title="删除对话？"
+        open={!!deleting}
+        onCancel={() => setDeleting(null)}
+        okText="删除"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        confirmLoading={managing}
+        onOk={async () => {
+          if (!deleting) return;
+          const item = deleting;
+          setManaging(true);
+          try {
+            await api(`/conversations/${item.id}`, "DELETE", {});
+            setItems((rows) => rows.filter((row) => row.id !== item.id));
+            if (idRef.current === item.id) {
+              localStorage.removeItem(storage);
+              localStorage.removeItem(turnKey);
+              resetCurrent();
+            }
+            setDeleting(null);
+          } catch (e) {
+            setError(getErrorMessage(e));
+          } finally {
+            setManaging(false);
+          }
+        }}
+      >
+        <p>“{deleting?.title}”将从历史中删除，已保存的训练记录和计划会保留。</p>
+      </Modal>
+      <Modal
+        centered
+        width={420}
+        title="重命名对话"
+        open={!!renaming}
+        onCancel={() => setRenaming(null)}
+        okText="保存"
+        cancelText="取消"
+        confirmLoading={managing}
+        okButtonProps={{
+          disabled: !renameTitle.trim() || renameTitle.trim().length > 100,
+        }}
+        onOk={async () => {
+          if (!renaming || !renameTitle.trim()) return;
+          setManaging(true);
+          try {
+            const result = await api<{ id: string; title: string }>(
+              `/conversations/${renaming.id}`,
+              "PATCH",
+              { title: renameTitle.trim() },
+            );
+            setItems((rows) =>
+              rows.map((row) =>
+                row.id === result.id ? { ...row, title: result.title } : row,
+              ),
+            );
+            setRenaming(null);
+          } catch (e) {
+            setError(getErrorMessage(e));
+          } finally {
+            setManaging(false);
+          }
+        }}
+      >
+        <Input
+          aria-label="对话名称"
+          value={renameTitle}
+          maxLength={100}
+          onChange={(e) => setRenameTitle(e.target.value)}
+          autoFocus
+        />
+      </Modal>
+    </Space>
+  );
+}

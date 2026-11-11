@@ -1,0 +1,17 @@
+/config.yaml
+backend/.venv/
+__pycache__/
+.pytest_cache/
+.pytest*-tmp/
+*.db
+*.db-wal
+*.db-shm
+.env
+node_modules/
+frontend/dist/
+.idea/
+runtime/
+.pnpm-store/
+.screenshots/
+.trae/
+*.tsbuildinfo
