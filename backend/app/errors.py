@@ -1,6 +1,10 @@
 """Public error messages. Never expose raw exception or provider text."""
 
 MESSAGES = {
+    "operation_already_undone": "该操作已经撤销。",
+    "operation_expired": "该操作已超过七天撤销期限。",
+    "snapshot_missing": "恢复快照已不存在，无法撤销。",
+    "auth_rate_limited": "操作过于频繁，请稍后重试。",
     "invalid_credentials": "账号或密码不正确，请重新输入。",
     "unauthenticated": "登录状态已失效，请重新登录；当前修改请先保留。",
     "csrf_failed": "页面验证已失效，请刷新页面后重试。",
@@ -10,11 +14,11 @@ MESSAGES = {
     "draft_bound_to_other_conversation": "这份草稿属于另一个对话，请返回原对话继续。",
     "draft_not_editable": "待确认内容已经确认或取消",
     "turn_not_retryable": "本轮无法重试，请恢复轮次查看结果或发送新消息。",
-    "workout_confirmation_required": "请先核对完整训练总结，再单独回复“确认写入”；需要修改请直接说明。",
     "workout_trashed": "训练记录已删除，无法修改。",
-    "exercise_archived": "该动作已停用，请选择其他动作。",
+    "missing_key_information": "训练记录缺少关键信息。",
     "exercise_not_found": "该动作已不存在，请刷新动作列表。",
     "equipment_not_found": "该器械已不存在，请刷新器械列表。",
+    "exercise_name_taken": "已有同名动作，请选择已有动作或修改名称。",
     "duplicate_exercise": "存在重复动作，请检查后再保存。",
     "shared_exercise_readonly": "共享动作不能修改，请创建自定义动作。",
     "custom_exercise_confirmation_required": "请先确认创建自定义动作。",

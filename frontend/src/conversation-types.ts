@@ -75,6 +75,7 @@ export type Snapshot = {
 };
 
 export const operationNames: Record<string, string> = {
+  undo_operation: "撤销操作",
   create_workout: "新增训练",
   update_workout: "修改训练",
   delete_workout: "删除训练",
@@ -137,7 +138,8 @@ export type TimelineItem =
   | { kind: "card"; action: Action };
 
 function displayed(message: Message): boolean {
-  if (message.role === "user" || message.role === "event") return true;
+  if (message.role === "event") return !!message.content;
+  if (message.role === "user") return true;
   // Assistant text shows as chat; tool-call-only assistant rows and tool
   // results stay internal and must not render empty bubbles or raw JSON.
   if (message.role === "assistant") return !!message.content;
@@ -186,5 +188,9 @@ export function canRetry(turn: Turn, snapshot: Snapshot): boolean {
   const lastUser = [...snapshot.messages]
     .reverse()
     .find((message) => message.role === "user");
+  const outcome = snapshot.messages.find(
+    (message) => message.turn_id === turn.id && message.event_kind === "action_result",
+  );
+  if (outcome) return !lastUser || lastUser.sequence < outcome.sequence;
   return !!lastUser && lastUser.turn_id === turn.id;
 }

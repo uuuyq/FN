@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
-from ..models import Exercise, ExercisePreference, Message, User, UserEquipment
+from ..models import Message, User, UserEquipment
 from ..services import fail
 from . import provider as provider_module
 
@@ -33,24 +33,17 @@ def context_prompt(runtime):
     return template.replace('{{ context_json }}', json.dumps(runtime, ensure_ascii=False))
 
 
-def runtime_context(db, user_id, mode, selected_date, pending_action=None):
+def runtime_context(db, user_id, mode, pending_action=None):
     from ..schemas import Profile
     user = db.get(User, user_id)
     profile = Profile(version=user.profile_version, **(user.profile or {})).model_dump(mode='json')
-    catalog = []
-    for row in db.scalars(select(Exercise).where(
-            Exercise.owner_id.in_([user_id]) | Exercise.owner_id.is_(None)).order_by(Exercise.id)):
-        pref = db.get(ExercisePreference, (user_id, row.id))
-        catalog.append({'id': row.id, 'name': row.name, 'aliases': row.aliases, 'muscles': row.muscles,
-            'equipment': row.equipment, 'archived': row.archived,
-            'available': pref.available if pref else False,
-            'preference_version': pref.version if pref else 1})
+    from ..modules.catalog.service import list_exercises
+    catalog = list_exercises(db, user_id)
     return {'today': datetime.now(ZoneInfo(profile['timezone'])).date().isoformat(),
             'timezone': profile['timezone'],
-            'selected_date': selected_date,
             'mode': mode,
             'profile': profile,
-            'equipment': [{'id': row.id, 'name': row.name} for row in db.scalars(
+            'equipment': [{'id': row.id, 'name': row.name, 'equipment_id': row.equipment_id} for row in db.scalars(
                 select(UserEquipment).where(UserEquipment.user_id == user_id))],
             'catalog': catalog,
             'pending_action': pending_action}
@@ -81,11 +74,33 @@ def output_budget(messages, tool_schemas):
                         provider_module.context_limit() - budget_usage(messages, tool_schemas)))
 
 
+
+def resolved_tool_content(content, outcomes):
+    """Project durable confirmation outcomes onto their original tool results."""
+    try:
+        pending = json.loads(content)
+    except (ValueError, TypeError):
+        return content
+    if not isinstance(pending, dict) or not isinstance(pending.get('data'), dict):
+        return content
+    outcome = outcomes.get(pending['data'].get('action_id'))
+    if outcome is None:
+        return content
+    result = {'ok': outcome['status'] == 'confirmed', 'data': {
+        'status': outcome['status'], 'action_id': outcome['action_id'], 'result': outcome.get('result')}}
+    receipt = outcome.get('result')
+    if isinstance(receipt, dict) and receipt.get('error'):
+        result['error'] = receipt['error']
+    return json.dumps(result, ensure_ascii=False)
+
+
 def assemble(db, conversation_id, runtime, tool_schemas, read_only=False):
     messages = [{'role': 'system', 'content': system_prompt(read_only)},
                 {'role': 'user', 'content': context_prompt(runtime)}]
     rows = db.scalars(select(Message).where(
         Message.conversation_id == conversation_id).order_by(Message.sequence)).all()
+    outcomes = {row.event_data['action_id']: row.event_data for row in rows
+                if row.event_kind == 'action_result' and row.event_data and row.event_data.get('action_id')}
     for row in rows:
         if row.role == 'user':
             messages.append({'role': 'user', 'content': row.content})
@@ -98,17 +113,18 @@ def assemble(db, conversation_id, runtime, tool_schemas, read_only=False):
             else:
                 messages.append({'role': 'assistant', 'content': row.content})
         elif row.role == 'tool':
-            messages.append({'role': 'tool', 'tool_call_id': row.tool_call_id, 'content': row.content})
-        elif row.role == 'event':
+            messages.append({'role': 'tool', 'tool_call_id': row.tool_call_id,
+                             'content': resolved_tool_content(row.content, outcomes)})
+        elif row.role == 'event' and row.event_kind != 'action_result':
             messages.append({'role': 'assistant', 'content': '[服务端操作结果] ' + row.content})
     check_budget(messages, tool_schemas)
     return messages
 
 
-def fresh_messages(db, user_id, conversation_id, mode, selected_date, tool_schemas, read_only=False):
+def fresh_messages(db, user_id, conversation_id, mode, tool_schemas, read_only=False):
     from . import actions as actions_module
     current = actions_module.pending(db, conversation_id)
     card = {'action_id': current[0].id, 'operation': current[0].operation,
             'summary': current[0].summary, 'created_at': current[0].created_at} if current else None
-    runtime = runtime_context(db, user_id, mode, selected_date, pending_action=card)
+    runtime = runtime_context(db, user_id, mode, pending_action=card)
     return assemble(db, conversation_id, runtime, tool_schemas, read_only=read_only)

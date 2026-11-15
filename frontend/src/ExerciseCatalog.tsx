@@ -12,7 +12,7 @@ const categories = [
   "其他",
 ];
 function category(e: Exercise) {
-  const m = e.muscles[0] || "";
+  const m = e.primary_muscles || "";
   if (/胸/.test(m)) return "胸部";
   if (/背|斜方|竖脊/.test(m)) return "背部";
   if (/三角|肩/.test(m)) return "肩部";
@@ -28,14 +28,12 @@ export function ExerciseCatalog({
   toggle,
   create,
   edit,
-  archive,
 }: {
   items: Exercise[];
   busy: boolean;
   toggle: (e: Exercise) => void;
   create: () => void;
   edit: (e: Exercise) => void;
-  archive: (e: Exercise) => void;
 }) {
   const [search, setSearch] = useState("");
   const [group, setGroup] = useState("全部");
@@ -47,7 +45,7 @@ export function ExerciseCatalog({
       (!equipment ||
         (equipment === "徒手"
           ? e.equipment.length === 0
-          : e.equipment.includes(equipment))),
+          : e.equipment.split(/[、,，]/).map((value) => value.trim()).includes(equipment))),
   );
   return (
     <section aria-label="动作目录">
@@ -65,7 +63,7 @@ export function ExerciseCatalog({
           value={equipment}
           allowClear
           onChange={setEquipment}
-          options={["徒手", ...new Set(items.flatMap((e) => e.equipment))].map(
+          options={["徒手", ...new Set(items.flatMap((e) => e.equipment.split(/[、,，]/).map((value) => value.trim()).filter(Boolean)))].map(
             (value) => ({ value, label: value }),
           )}
         />
@@ -100,22 +98,19 @@ export function ExerciseCatalog({
               <div className="exercise-grid">
                 {rows.map((e) => (
                   <div
-                    className={`exercise-tile ${e.available && !e.archived ? "selectable" : ""} ${e.archived ? "archived" : ""}`}
+                    className={`exercise-tile ${e.active ? "selectable" : ""}`}
                     key={e.id}
                   >
                     <button
                       type="button"
                       aria-label={e.name}
-                      aria-pressed={
-                        e.available && !e.archived
-                      }
-                      disabled={busy || e.archived}
+                      aria-pressed={e.active}
+                      disabled={busy}
                       onClick={() => toggle(e)}
                     >
                       <strong>{e.name}</strong>
-                      <span>{e.muscles.join("、") || "肌群未设置"}</span>
-                      <span>{e.equipment.join("、") || "徒手"}</span>
-                      {e.archived && <small>已停用</small>}
+                      <span>{e.primary_muscles || "肌群未设置"}</span>
+                      <span>{e.equipment || "徒手"}</span>
                     </button>
                     {e.owner_id && (
                       <Dropdown
@@ -123,15 +118,9 @@ export function ExerciseCatalog({
                         menu={{
                           items: [
                             { key: "edit", label: "编辑" },
-                            {
-                              key: "archive",
-                              label: "停用",
-                              disabled: e.archived,
-                              danger: true,
-                            },
                           ],
                           onClick: ({ key }) =>
-                            key === "edit" ? edit(e) : archive(e),
+                            key === "edit" && edit(e),
                         }}
                       >
                         <Button

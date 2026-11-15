@@ -5,7 +5,6 @@ from sqlalchemy import func, select
 from ..errors import error_message
 from ..models import Message, Turn, uid
 from ..services import owned, fail
-from . import actions as actions_module
 from . import conversations
 
 LEASE_SECONDS = 200
@@ -35,17 +34,18 @@ def capacity(db):
         fail(429, 'model_capacity', retryable=True)
 
 
-def _create(db, user_id, conversation_id, mode, selected_date, text):
+def _create(db, user_id, conversation_id, mode, text):
     conversation = conversations.conversation(db, conversation_id, user_id)
     expire(db, conversation_id)
     if db.scalar(select(Turn.id).where(Turn.conversation_id == conversation_id, Turn.status == 'running')):
         fail(409, 'conversation_busy')
     capacity(db)
-    actions_module.supersede(db, conversation_id)
+    # A plain new message keeps an existing pending card executable (G13);
+    # only a successful new proposal supersedes it, atomically in propose().
     conversations.repair_partial_tool_calls(db, conversation_id)
     row = Turn(user_id=user_id, conversation_id=conversation_id, token=uid(),
                deadline=int(time.time()) + LEASE_SECONDS,
-               context={'mode': mode, 'selected_date': selected_date})
+               context={'mode': mode})
     db.add(row)
     db.flush()
     conversations.add_message(db, conversation_id, row.id, 'user', content=text)
@@ -53,8 +53,7 @@ def _create(db, user_id, conversation_id, mode, selected_date, text):
 
 
 def start(db, user_id, conversation_id, body):
-    return _create(db, user_id, conversation_id, body.mode,
-                   body.selected_date.isoformat() if body.selected_date else None, body.text)
+    return _create(db, user_id, conversation_id, body.mode, body.text)
 
 
 def retry(db, user_id, object_id):
@@ -69,7 +68,13 @@ def retry(db, user_id, object_id):
     later = db.scalar(select(Message.id).where(
         Message.conversation_id == row.conversation_id, Message.role == 'user',
         Message.turn_id != row.id, Message.sequence > (own_message or 0)))
-    if later or own_message is None:
+    if (row.context or {}).get('source_action_id'):
+        anchor = db.scalar(select(Message.sequence).where(Message.turn_id == row.id).order_by(Message.sequence).limit(1))
+        later = db.scalar(select(Message.id).where(Message.conversation_id == row.conversation_id,
+            Message.role == 'user', Message.sequence > (anchor or 0)))
+        if later or anchor is None:
+            fail(409, 'turn_not_retryable')
+    elif later or own_message is None:
         fail(409, 'turn_not_retryable')
     if db.scalar(select(Turn.id).where(Turn.conversation_id == row.conversation_id, Turn.status == 'running')):
         fail(409, 'conversation_busy')
@@ -77,3 +82,34 @@ def retry(db, user_id, object_id):
     conversations.repair_partial_tool_calls(db, row.conversation_id)
     row.status, row.error, row.token, row.deadline = 'running', None, uid(), int(time.time()) + LEASE_SECONDS
     return turn_view(row)
+
+
+def continue_action(db, user_id, action):
+    """Create one durable continuation for a decided action in its transaction."""
+    result = dict(action.result or {})
+    if result.get('continuation_turn_id'):
+        return result['continuation_turn_id']
+    conversations.conversation(db, action.conversation_id, user_id)
+    expire(db, action.conversation_id)
+    if db.scalar(select(Turn.id).where(Turn.conversation_id == action.conversation_id,
+                                     Turn.status == 'running')):
+        fail(409, 'conversation_busy')
+    running = db.scalar(select(func.count()).select_from(Turn).where(
+        Turn.status == 'running', Turn.deadline > int(time.time())))
+    original = db.get(Turn, action.turn_id)
+    context = dict(original.context or {}) if original else {'mode': 'edit'}
+    context['source_action_id'] = action.id
+    row = Turn(user_id=user_id, conversation_id=action.conversation_id, token=uid(),
+               deadline=int(time.time()) + LEASE_SECONDS, context=context)
+    if running >= GLOBAL_RUNNING_LIMIT:
+        row.status, row.error = 'failed', 'model_capacity'
+    db.add(row)
+    db.flush()
+    # A structured server event supplies the execution outcome without a user prompt.
+    conversations.add_message(db, action.conversation_id, row.id, 'event', content='',
+        event_kind='action_result', event_data={'action_id': action.id,
+            'operation': action.operation, 'tool_name': action.tool_name,
+            'status': action.status, 'result': action.result})
+    result['continuation_turn_id'] = row.id
+    action.result = result
+    return row.id

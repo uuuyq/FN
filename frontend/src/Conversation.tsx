@@ -40,7 +40,6 @@ const turnErrorHints: Record<string, string> = {
 export function Conversation({
   owner,
   onSend,
-  selectedDate,
   onLock,
   refresh,
   names,
@@ -48,7 +47,6 @@ export function Conversation({
 }: {
   owner: string;
   onSend?: () => void;
-  selectedDate?: string;
   onLock: (locked: boolean) => void;
   refresh: () => Promise<void>;
   names: Record<string, string>;
@@ -273,7 +271,6 @@ export function Conversation({
         path: `/conversations/${target}/messages`,
         body: {
           text,
-          selected_date: selectedDate || null,
           mode: "edit",
         },
         requestId: crypto.randomUUID(),
@@ -297,8 +294,7 @@ export function Conversation({
       onLock(false);
     }
   };
-  // Confirm/cancel never calls the model: a plain JSON request against the
-  // action, whose 200 response still may carry status=conflict/failed.
+  // Decisions return their durable model continuation, including execution failures.
   const decide = async (requested: Action, kind: "confirm" | "cancel") => {
     const conversationId = idRef.current;
     if (!conversationId) return;
@@ -343,6 +339,16 @@ export function Conversation({
         // cancelled/conflict/failed only need the conversation back: the
         // event message and the card's terminal state carry the outcome.
         await load();
+      }
+      const continuationId = updated.result?.continuation_turn_id;
+      if (typeof continuationId === "string") {
+        const p: Pending = {
+          path: `/turns/${continuationId}/events`,
+          body: {}, requestId: crypto.randomUUID(), mode: "edit", sentText: "",
+          turnId: continuationId,
+        };
+        pending.current = p;
+        await observe(p, "GET", conversationId);
       }
     } catch (e) {
       if (idRef.current === conversationId)
@@ -391,6 +397,7 @@ export function Conversation({
                 action={item.action}
                 names={names}
                 working={working}
+                locked={busy || !!pending.current}
                 onConfirm={(action) => void safe(() => decide(action, "confirm"))}
                 onCancel={(action) => void safe(() => decide(action, "cancel"))}
               />

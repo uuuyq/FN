@@ -1,27 +1,29 @@
-"""Workout domain services shared by the HTTP router and the Agent tools."""
+"""Training persistence. The caller owns the write transaction."""
 from decimal import Decimal
+from itertools import groupby
 
 from sqlalchemy import delete, func, select
 
-from ...models import Exercise, Workout, WorkoutExercise, WorkoutSet, uid
-from ...schemas import WorkoutContent
+from ...models import PublicExercise, UserExercise, Workout, WorkoutSet, uid, now, normalize_exercise_text
+from ...schemas import ExerciseInput
 from ...services import exercise, fail, owned, version
+from ..catalog.service import create_exercise, preference_target
 
 
-def query_workouts(db, user_id, *, on=None, start=None, end=None, exercise_id=None, offset=0, limit=50):
-    """Owned, stable-ordered listing with SQL pagination. Returns (rows, total)."""
-    stmt = select(Workout).where(Workout.user_id == user_id, Workout.status == 'active', Workout.deleted_at.is_(None))
+def query_workouts(db, user_id, *, on=None, start_date=None, end_date=None, exercise_id=None, offset=0, limit=50):
+    stmt = select(Workout).where(Workout.user_id == user_id, Workout.deleted_at.is_(None))
     if on:
         stmt = stmt.where(Workout.actual_date == on.isoformat())
-    if start:
-        stmt = stmt.where(Workout.actual_date >= start.isoformat())
-    if end:
-        stmt = stmt.where(Workout.actual_date <= end.isoformat())
+    if start_date:
+        stmt = stmt.where(Workout.actual_date >= start_date.isoformat())
+    if end_date:
+        stmt = stmt.where(Workout.actual_date <= end_date.isoformat())
     if exercise_id:
-        exercise(db, exercise_id, user_id)
-        stmt = stmt.where(Workout.id.in_(select(WorkoutExercise.workout_id).where(WorkoutExercise.exercise_id == exercise_id)))
+        stmt = stmt.where(select(WorkoutSet.id).where(WorkoutSet.workout_id == Workout.id,
+            (WorkoutSet.public_exercise_id == exercise_id) | (WorkoutSet.user_exercise_id == exercise_id)).exists())
     total = db.scalar(select(func.count()).select_from(stmt.subquery()))
-    rows = db.scalars(stmt.order_by(Workout.actual_date.desc(), Workout.actual_time.desc(), Workout.created_at.desc(), Workout.id.desc()).offset(offset).limit(limit)).all()
+    rows = db.scalars(stmt.order_by(Workout.actual_date.desc(), Workout.actual_time.desc(), Workout.created_at.desc(), Workout.id.desc())
+                      .offset(offset).limit(limit)).all()
     return rows, total
 
 
@@ -31,41 +33,57 @@ def normalized_content(db, user_id, content):
     for item in data['exercises']:
         if item['exercise_id']:
             exercise(db, item['exercise_id'], user_id)
-        item['id'] = item['id'] or uid()
-        for obj in [item, *item['sets']]:
-            obj['id'] = obj['id'] or uid()
-            if obj['id'] in seen:
+        for group in item['sets']:
+            group['id'] = group['id'] or uid()
+            if group['id'] in seen:
                 fail(422, 'duplicate_stable_id')
-            seen.add(obj['id'])
+            seen.add(group['id'])
     return data
 
 
+def sets_brief(sets):
+    """Aggregate consecutive identical sets: 60 kg，3组×8次；unknown stays visible."""
+    import itertools
+    parts = []
+    for (weight, reps), groups in itertools.groupby(
+            sets, key=lambda s: (s.get('weight_kg'), s.get('reps'))):
+        count = len(list(groups))
+        weight_text = '{} kg'.format(weight) if weight is not None else '重量未记录'
+        reps_text = '{} 次'.format(reps) if reps is not None else '次数未记录'
+        if count > 1:
+            parts.append('{}，{}组×{}'.format(weight_text, count, reps_text))
+        else:
+            parts.append('{} × {}'.format(weight_text, reps_text))
+    return '；'.join(parts)
+
+
 def workout_view(db, obj):
+    # Names come from both current catalogs, including disabled preferences.
+    stmt = select(WorkoutSet, func.coalesce(PublicExercise.name, UserExercise.name)).outerjoin(
+        PublicExercise, WorkoutSet.public_exercise_id == PublicExercise.id).outerjoin(
+        UserExercise, WorkoutSet.user_exercise_id == UserExercise.id).where(
+        WorkoutSet.workout_id == obj.id).order_by(WorkoutSet.exercise_position, WorkoutSet.set_position)
+    rows = db.execute(stmt).all()
     content = {key: getattr(obj, key) for key in ('actual_date', 'actual_time', 'notes')}
     content['exercises'] = []
     content['missing_information'] = {}
-    for row in db.scalars(select(WorkoutExercise).where(WorkoutExercise.workout_id == obj.id).order_by(WorkoutExercise.position)):
-        item = {key: getattr(row, key) for key in ('id', 'exercise_id', 'weight_mode', 'weight_scope', 'name_snapshot')}
-        item['sets'] = []
-        for group in db.scalars(select(WorkoutSet).where(WorkoutSet.workout_exercise_id == row.id).order_by(WorkoutSet.position)):
-            item['sets'].append({'id': group.id, 'kind': group.kind, 'weight_kg': str(Decimal(group.weight_grams) / 1000) if group.weight_grams is not None else None, 'reps': group.reps, 'notes': group.notes})
+    for position, groups in groupby(rows, key=lambda row: row[0].exercise_position):
+        groups = list(groups)
+        first, name = groups[0]
+        item = {'exercise_id': first.public_exercise_id or first.user_exercise_id,
+                'name': name, 'sets': []}
+        for group, _ in groups:
+            item['sets'].append({'id': group.id, 'kind': group.kind,
+                'weight_kg': str(Decimal(group.weight_grams) / 1000) if group.weight_grams is not None else None,
+                'reps': group.reps, 'notes': group.notes})
         content['exercises'].append(item)
-    return {'id': obj.id, 'version': obj.version, 'status': obj.status, 'deleted_at': obj.deleted_at, 'created_at': obj.created_at, 'content': content}
-
-
-def editable_content(view):
-    content = view['content']
-    for item in content['exercises']:
-        item.pop('name_snapshot', None)
-    return WorkoutContent.model_validate(content)
+    return {'id': obj.id, 'version': obj.version, 'deleted_at': obj.deleted_at,
+            'created_at': obj.created_at, 'content': content}
 
 
 def delete_workout(db, user_id, object_id, expected_version):
-    """Hide immediately; retain the record and children for seven days."""
-    from ...models import now
     row = owned(db, Workout, object_id, user_id)
     version(row, expected_version)
-    row.status = 'closed'
     row.deleted_at = now()
     row.version += 1
     db.flush()
@@ -73,85 +91,66 @@ def delete_workout(db, user_id, object_id, expected_version):
 
 
 def purge_expired_workouts(db, user_id=None, at=None):
-    """Purge in the caller's write transaction, including foreign-key references."""
     from datetime import datetime, timedelta, timezone
-    from ...models import WorkoutDraft
     cutoff = ((at or datetime.now(timezone.utc)) - timedelta(days=7)).isoformat()
-    query = select(Workout).where(Workout.status == 'closed', Workout.deleted_at <= cutoff)
+    from ...models import AgentOperation
+    expired = select(AgentOperation).where(AgentOperation.created_at <= cutoff)
+    if user_id is not None:
+        expired = expired.where(AgentOperation.user_id == user_id)
+    for operation in db.scalars(expired):
+        operation.before = None
+    query = select(Workout).where(Workout.deleted_at <= cutoff)
     if user_id is not None:
         query = query.where(Workout.user_id == user_id)
     rows = list(db.scalars(query))
     for row in rows:
-        for draft in db.scalars(select(WorkoutDraft).where(
-                (WorkoutDraft.original_id == row.id) | (WorkoutDraft.result_id == row.id))):
-            if draft.original_id == row.id:
-                draft.original_id = draft.original_version = None
-            if draft.result_id == row.id:
-                draft.result_id = None
-            draft.status = 'cancelled'
-            draft.version += 1
-        db.flush()
-        ids = select(WorkoutExercise.id).where(WorkoutExercise.workout_id == row.id)
-        db.execute(delete(WorkoutSet).where(WorkoutSet.workout_exercise_id.in_(ids)), execution_options={'synchronize_session': False})
-        db.execute(delete(WorkoutExercise).where(WorkoutExercise.workout_id == row.id), execution_options={'synchronize_session': False})
+        db.execute(delete(WorkoutSet).where(WorkoutSet.workout_id == row.id))
         db.delete(row)
-        db.flush()
+    db.flush()
     return len(rows)
 
 
-def validate_exercise_references(db, user_id, data, obj=None):
-    """Only the same historical exercise entry may retain an archived reference."""
-    previous = {row.id: row.exercise_id for row in db.scalars(
-        select(WorkoutExercise).where(WorkoutExercise.workout_id == obj.id))} if obj else {}
+def validate_exercise_references(db, user_id, data):
     for item in data['exercises']:
         if item['exercise_id']:
-            retained = previous.get(item.get('id')) == item['exercise_id']
-            exercise(db, item['exercise_id'], user_id, active=not retained)
+            exercise(db, item['exercise_id'], user_id)
 
 
 def save_workout(db, user_id, data, obj=None):
-    validate_exercise_references(db, user_id, data, obj)
-    # Validate all referenced objects and IDs before replacing any rows.
-    previous = workout_view(db, obj) if obj else None
-    old_names = {i['id']: i for i in previous['content']['exercises']} if previous else {}
+    validate_exercise_references(db, user_id, data)
+    # Check all stable IDs before replacing the old sets.
+    ids = [group['id'] for item in data['exercises'] for group in item['sets']]
+    if len(ids) != len(set(ids)):
+        fail(422, 'duplicate_stable_id')
+    existing = db.scalars(select(WorkoutSet).where(WorkoutSet.id.in_(ids))).all()
+    if any(obj is None or group.workout_id != obj.id for group in existing):
+        fail(409, 'stable_id_conflict')
+    targets = []
     for item in data['exercises']:
-        existing = db.get(WorkoutExercise, item['id'])
-        if existing and (obj is None or existing.workout_id != obj.id):
-            fail(409, 'stable_id_conflict')
-        for group in item['sets']:
-            existing_set = db.get(WorkoutSet, group['id'])
-            if existing_set:
-                parent = db.get(WorkoutExercise, existing_set.workout_exercise_id)
-                if obj is None or parent.workout_id != obj.id:
-                    fail(409, 'stable_id_conflict')
         if item['exercise_id']:
             row = exercise(db, item['exercise_id'], user_id)
         else:
             if not item['confirm_create']:
                 fail(422, 'custom_exercise_confirmation_required')
-            row = Exercise(owner_id=user_id, name=item['custom_name'])
-            db.add(row)
-            db.flush()
-        item['exercise_id'] = row.id
-        old = old_names.get(item['id'])
-        item['name_snapshot'] = old['name_snapshot'] if old and old['exercise_id'] == row.id else row.name
+            row = db.scalar(select(UserExercise).where(UserExercise.user_id == user_id,
+                UserExercise.normalized_name == normalize_exercise_text(item['custom_name'])))
+            if row is None:
+                row = create_exercise(db, user_id, ExerciseInput(name=item['custom_name']))
+        targets.append(preference_target(row))
     if obj is None:
-        obj = Workout(user_id=user_id, actual_date=data['actual_date'], actual_time=data['actual_time'], notes=data['notes'])
+        obj = Workout(user_id=user_id, actual_date=data['actual_date'])
         db.add(obj)
         db.flush()
     else:
-        ids = select(WorkoutExercise.id).where(WorkoutExercise.workout_id == obj.id)
-        db.execute(delete(WorkoutSet).where(WorkoutSet.workout_exercise_id.in_(ids)), execution_options={'synchronize_session': False})
-        db.execute(delete(WorkoutExercise).where(WorkoutExercise.workout_id == obj.id), execution_options={'synchronize_session': False})
+        db.execute(delete(WorkoutSet).where(WorkoutSet.workout_id == obj.id))
         db.flush()
-        db.expunge_all()
-        obj = db.get(Workout, obj.id)
         obj.version += 1
     obj.actual_date, obj.actual_time, obj.notes = data['actual_date'], data['actual_time'], data['notes']
-    for position, item in enumerate(data['exercises']):
-        db.add(WorkoutExercise(id=item['id'], workout_id=obj.id, exercise_id=item['exercise_id'], position=position, name_snapshot=item['name_snapshot'], weight_mode=item['weight_mode'], weight_scope=item['weight_scope']))
-        db.flush()
-        for index, group in enumerate(item['sets']):
-            db.add(WorkoutSet(id=group['id'], workout_exercise_id=item['id'], position=index, kind=group['kind'], weight_grams=int(Decimal(group['weight_kg']) * 1000) if group['weight_kg'] is not None else None, reps=group['reps'], notes=group['notes']))
+    for exercise_position, (item, target) in enumerate(zip(data['exercises'], targets)):
+        for set_position, group in enumerate(item['sets']):
+            db.add(WorkoutSet(id=group['id'], workout_id=obj.id, **target,
+                exercise_position=exercise_position, set_position=set_position, kind=group['kind'],
+                weight_grams=int(Decimal(group['weight_kg']) * 1000) if group['weight_kg'] is not None else None,
+                reps=group['reps'], notes=group['notes']))
     db.flush()
     return obj

@@ -4,7 +4,7 @@ import json
 from fastapi import HTTPException
 
 from .errors import error_detail
-from .models import Exercise, RequestReceipt, Workout
+from .models import RequestReceipt, Workout
 
 
 def fail(status, code, **details):
@@ -13,7 +13,7 @@ def fail(status, code, **details):
 
 def owned(db, model, object_id, user_id):
     obj = db.get(model, object_id)
-    if obj is None or obj.user_id != user_id or (model is Workout and obj.status != 'active'):
+    if obj is None or obj.user_id != user_id or (model is Workout and obj.deleted_at is not None):
         fail(404, 'not_found')
     return obj
 
@@ -23,13 +23,9 @@ def version(obj, expected, field='version'):
         fail(409, 'version_conflict', latest_version=getattr(obj, field))
 
 
-def exercise(db, object_id, user_id, active=False):
-    obj = db.get(Exercise, object_id)
-    if obj is None or obj.owner_id not in (None, user_id):
-        fail(404, 'exercise_not_found')
-    if active and obj.archived:
-        fail(409, 'exercise_archived')
-    return obj
+def exercise(db, object_id, user_id):
+    from .modules.catalog.service import get_exercise
+    return get_exercise(db, user_id, object_id)
 
 
 def serialize(obj):

@@ -21,12 +21,12 @@ import {
   setCSRF,
   blankSet,
   type Content,
-  type Draft,
+  type Workout,
   type Exercise,
 } from "./api";
 import { TrainingSummary } from "./TrainingSummary";
 import { Brand } from "./Brand";
-import { useWorkoutDraft } from "./useWorkoutDraft";
+import { useWorkoutEditor } from "./useWorkoutEditor";
 import { Conversation } from "./Conversation";
 import { TrainingCalendar } from "./TrainingCalendar";
 import { ExerciseCatalog } from "./ExerciseCatalog";
@@ -34,6 +34,7 @@ const { Title, Text } = Typography;
 const dateHere = (timeZone = "Asia/Shanghai") =>
   new Date().toLocaleDateString("sv-SE", { timeZone });
 export function App() {
+  const [modal, modalContextHolder] = Modal.useModal();
   const [registering, setRegistering] = useState(false);
   const [user, setUser] = useState<any>(null),
     [ready, setReady] = useState(false),
@@ -48,19 +49,20 @@ export function App() {
     missing_information: {},
   });
   const {
-    draft,
     content,
+    original,
+    pending,
+    active,
     setContent: setDraftContent,
     replace,
-    flush: saveDraft,
-    settle,
+    save: saveRecord,
     restoring,
-    dirty,
     saving,
     saveError,
-  } = useWorkoutDraft(user?.id, emptyContent);
-  const [remoteDraft, setRemoteDraft] = useState<Draft | null>(null);
+  } = useWorkoutEditor(user?.id, emptyContent);
+  const [remoteWorkout, setRemoteWorkout] = useState<Workout | null>(null);
   const [modelBusy, setModelBusy] = useState(false);
+  const [notice, setNotice] = useState("");
   const setContent = setDraftContent;
   const [preview, setPreview] = useState(false);
   const [profile, setProfile] = useState<any>({}),
@@ -98,11 +100,49 @@ export function App() {
     setCatalog(rows);
   };
   const [revision, setRevision] = useState(0);
-  const [selectedDate, setSelectedDate] = useState<string | undefined>();
   const [chatActive, setChatActive] = useState(false);
   const [newChatCount, setNewChatCount] = useState(0);
   const [accountOpen, setAccountOpen] = useState(false);
   const bumpRevision = () => setRevision((v) => v + 1);
+  const meaningful = content.exercises.length > 0;
+  const closeRecord = async () => {
+    if (tab === "record" && active)
+      setNotice("编辑内容已保留在此浏览器，可继续编辑。");
+    setTab("home");
+  };
+  const finishSave = async () => {
+    await saveRecord();
+    setPreview(false);
+    setNotice("记录已保存");
+    bumpRevision();
+    setTab("home");
+    await loadCatalog();
+  };
+  const openEditor = (workout: Workout | null, date?: string) => {
+    const open = () => {
+      replace(
+        workout,
+        workout
+          ? undefined
+          : {
+              ...emptyContent(),
+              actual_date: date || dateHere(profile.timezone),
+            },
+      );
+      setNotice("");
+      setTab("record");
+    };
+    if (active && (!workout || workout.id !== original?.id)) {
+      modal.confirm({
+        title: "此浏览器中有未保存的编辑内容",
+        content: "是否放弃当前内容，打开另一条记录？",
+        okText: "放弃并打开",
+        cancelText: "保留当前内容",
+        onOk: open,
+      });
+    } else if (active) setTab("record");
+    else open();
+  };
   const load = async () => {
     await loadCatalog();
     setProfile(await api("/profile"));
@@ -123,18 +163,6 @@ export function App() {
       })
       .finally(() => setReady(true));
   }, []);
-  useEffect(() => {
-    if (
-      profile.timezone &&
-      !saveError &&
-      !restoring &&
-      !draft &&
-      !dirty &&
-      content.exercises.length === 0
-    ) {
-      replace(null, { ...content, actual_date: dateHere(profile.timezone) });
-    }
-  }, [profile.timezone]);
   const updateEntry = (index: number, change: any) =>
     setContent({
       ...content,
@@ -148,7 +176,7 @@ export function App() {
         {
           exercise_id: e.id,
           version: e.preference_version,
-          available: e.available,
+          active: e.active,
           ...change,
         },
       ],
@@ -261,52 +289,39 @@ export function App() {
   const record = (
     <>
       <fieldset
-        disabled={
-          restoring ||
-          busy ||
-          preview ||
-          modelBusy ||
-
-          (draft?.status !== undefined && draft.status !== "editable")
-        }
+        disabled={restoring || busy || preview || saving || pending}
         style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}
       >
         <div role="status" aria-live="polite" style={{ marginBottom: 16 }}>
           {restoring
-            ? "正在恢复待确认内容"
+            ? "正在恢复本地编辑内容"
             : saveError
-              ? "保存失败：" + saveError.message
+              ? saveError.message
               : saving
                 ? "保存中"
-                : dirty
-                  ? "有未保存修改"
-                  : draft
-                    ? `已保存 · 版本 ${draft.version}`
-                    : "尚未创建待确认内容"}
+                : active
+                  ? "编辑内容仅保存在此浏览器，点击保存后提交"
+                  : "新记录，尚未保存"}
           {saveError && (
             <Button
               disabled={busy || restoring}
-              onClick={() =>
-                void run(async () => {
-                  await saveDraft();
-                })
-              }
+              onClick={() => void run(finishSave)}
             >
               重试保存
             </Button>
           )}
-          {draft && (
+          {original && !pending && (
             <Button
               disabled={busy || saving || restoring}
               onClick={() =>
                 void run(async () => {
-                  setRemoteDraft(
-                    await api<Draft>("/workout-drafts/" + draft.id),
+                  setRemoteWorkout(
+                    await api<Workout>("/workouts/" + original.id),
                   );
                 })
               }
             >
-              查看服务端版本
+              查看最新记录
             </Button>
           )}
         </div>
@@ -327,34 +342,18 @@ export function App() {
               setContent({ ...content, actual_time: e.target.value || null })
             }
           />
-          <Button
-            disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                if (dirty)
-                  throw Error("存在本地未保存修改，请先保存或查看服务端版本");
-                const id = localStorage.getItem("fitplan-draft-" + user.id);
-                if (!id) throw Error("没有已保存待确认内容");
-                const d = await api<Draft>("/workout-drafts/" + id);
-                if (d.status !== "editable") throw Error("待确认内容已结束");
-                replace(d);
-              })
-            }
-          >
-            恢复已保存待确认内容
-          </Button>
         </Space>
         <p>
           <Text type="secondary">
             重量单位为
-            kg，最多三位小数。未知重量或次数请留空，计重口径可保留“未知”。
+            kg，最多三位小数。未知重量或次数请留空，单侧重量、自重或辅助重量等说明填写在组备注中。
           </Text>
         </p>
         {content.exercises.map((entry, index) => (
           <Card
-            key={entry.id || index}
+            key={index}
             className="entry"
-            title={`${index + 1}. ${entry.name_snapshot || catalog.find((e) => e.id === entry.exercise_id)?.name || entry.custom_name || "选择动作"}`}
+            title={`${index + 1}. ${entry.name || catalog.find((e) => e.id === entry.exercise_id)?.name || entry.custom_name || "选择动作"}`}
             extra={
               <Space>
                 <Button
@@ -393,7 +392,6 @@ export function App() {
                 value={entry.exercise_id || "custom"}
                 options={[
                   ...catalog
-                    .filter((e) => !e.archived || e.id === entry.exercise_id)
                     .map((e) => ({ value: e.id, label: e.name })),
                   { value: "custom", label: "未知动作（确认时创建）" },
                 ]}
@@ -424,30 +422,6 @@ export function App() {
                   </Checkbox>
                 </>
               )}
-              <Select
-                aria-label="计重方式"
-                value={entry.weight_mode}
-                style={{ width: 150 }}
-                options={Object.entries({
-                  unknown: "计重方式未知",
-                  external: "外部重量",
-                  bodyweight: "自重",
-                  added: "附加重量",
-                  assisted: "辅助重量",
-                }).map(([value, label]) => ({ value, label }))}
-                onChange={(v) => updateEntry(index, { weight_mode: v })}
-              />
-              <Select
-                aria-label="重量口径"
-                value={entry.weight_scope}
-                style={{ width: 150 }}
-                options={[
-                  { value: "unknown", label: "重量口径未知" },
-                  { value: "total", label: "总重量" },
-                  { value: "per_side", label: "单侧重量" },
-                ]}
-                onChange={(v) => updateEntry(index, { weight_scope: v })}
-              />
             </Space>
             {entry.sets.map((s, j) => (
               <div className="group" key={s.id || j}>
@@ -531,7 +505,6 @@ export function App() {
               </div>
             ))}
             <Button
-              disabled={modelBusy}
               onClick={() =>
                 updateEntry(index, { sets: [...entry.sets, blankSet()] })
               }
@@ -548,9 +521,7 @@ export function App() {
                 exercises: [
                   ...content.exercises,
                   {
-                    exercise_id: catalog.find((e) => !e.archived)?.id,
-                    weight_mode: "unknown",
-                    weight_scope: "unknown",
+                    exercise_id: (catalog.find((e) => e.active) ?? catalog[0])?.id,
                     sets: [blankSet()],
                   },
                 ],
@@ -560,45 +531,38 @@ export function App() {
             添加动作
           </Button>
           <Button
-            loading={busy}
-            onClick={() =>
-              void run(async () => {
-                await saveDraft();
-              })
-            }
+            aria-label="保存记录"
+            type="primary"
+            loading={busy || saving}
+            disabled={!meaningful || restoring}
+            onClick={() => void run(finishSave)}
           >
-            保存待确认内容
+            保存记录
           </Button>
           <Button
-            aria-label="完整预览并确认"
-            type="primary"
-            loading={busy}
-            onClick={() =>
-              void run(async () => {
-                const latest = await saveDraft();
-                if (!latest) throw Error("请先添加动作及训练组");
-                setPreview(true);
-              })
-            }
+            aria-label="完整预览"
+            disabled={!meaningful}
+            onClick={() => setPreview(true)}
           >
-            完整预览并确认
+            完整预览
           </Button>
           <Button
             danger
-            disabled={(!draft && !dirty) || busy}
-            onClick={() =>
-              void run(async () => {
-                const latest = await settle();
-                if (latest)
-                  await api(`/workout-drafts/${latest.id}/cancel`, "POST", {
-                    version: latest.version,
-                  });
-                replace(null);
-                localStorage.removeItem("fitplan-draft-" + user.id);
-              })
-            }
+            disabled={!active || busy}
+            onClick={() => {
+              modal.confirm({
+                title: "放弃未保存的修改？",
+                okText: "放弃修改",
+                cancelText: "继续编辑",
+                onOk: () => {
+                  replace(null);
+                  setTab("home");
+                  setNotice("");
+                },
+              });
+            }}
           >
-            取消待确认内容
+            放弃修改
           </Button>
         </Space>
         <Input.TextArea
@@ -608,6 +572,15 @@ export function App() {
           onChange={(e) => setContent({ ...content, notes: e.target.value })}
         />
       </fieldset>
+      {pending && !saving && (
+        <Button
+          type="primary"
+          loading={busy}
+          onClick={() => void run(finishSave)}
+        >
+          重试保存并核实结果
+        </Button>
+      )}
     </>
   );
   const catalogEquipment = (
@@ -697,7 +670,7 @@ export function App() {
               toggle={(e) =>
                 void run(() =>
                   preference(e, {
-                    available: !e.available,
+                    active: !e.active,
                   }),
                 )
               }
@@ -705,20 +678,13 @@ export function App() {
                 setCustom(e);
                 customForm.setFieldsValue({
                   ...e,
-                  aliases: e.aliases.join("、"),
-                  muscles: e.muscles.join("、"),
-                  secondary_muscles: e.secondary_muscles.join("、"),
-                  equipment: e.equipment.join("、"),
+                  aliases: e.aliases,
+                  primary_muscles: e.primary_muscles,
+                  secondary_muscles: e.secondary_muscles,
+                  equipment: e.equipment,
                 });
               }}
-              archive={(e) =>
-                void run(async () => {
-                  await api(`/exercises/${e.id}/archive`, "POST", {
-                    version: e.version,
-                  });
-                  await loadCatalog();
-                })
-              }
+
             />
           ),
         },
@@ -798,7 +764,10 @@ export function App() {
             placeholder="选择厂商自动填入接口地址"
             options={[
               { value: "https://api.deepseek.com", label: "DeepSeek" },
-              { value: "https://api.moonshot.cn/v1", label: "Kimi（月之暗面）" },
+              {
+                value: "https://api.moonshot.cn/v1",
+                label: "Kimi（月之暗面）",
+              },
               {
                 value: "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 label: "阿里云百炼",
@@ -834,7 +803,11 @@ export function App() {
             onClick={() =>
               void run(async () => {
                 setAiTestOk(false);
-                await api("/ai-config/test", "POST", await aiForm.validateFields());
+                await api(
+                  "/ai-config/test",
+                  "POST",
+                  await aiForm.validateFields(),
+                );
                 setAiTestOk(true);
               })
             }
@@ -865,6 +838,7 @@ export function App() {
   );
   return (
     <main>
+      {modalContextHolder}
       <header>
         <div>
           <Brand />
@@ -881,17 +855,16 @@ export function App() {
                   key: "logout",
                   label: "退出登录",
                   danger: true,
-                  disabled: modelBusy,
+                  disabled: modelBusy || saving,
                 },
               ],
               onClick: ({ key }) => {
                 if (key === "logout")
                   void run(async () => {
-                    if (dirty || saving) await saveDraft();
                     await api("/auth/logout", "POST");
                     setUser(null);
                     setCSRF("");
-                    replace(null);
+                    setNotice("");
                   });
                 else if (key === "account") setAccountOpen(true);
                 else setTab(key);
@@ -923,29 +896,28 @@ export function App() {
           </Button>
         )}
         <div hidden={chatActive}>
+          {notice && (
+            <Alert
+              closable
+              onClose={() => setNotice("")}
+              type="success"
+              message={notice}
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {active && (
+            <Button
+              style={{ marginBottom: 12 }}
+              onClick={() => setTab("record")}
+            >
+              继续编辑未保存的记录
+            </Button>
+          )}
           <TrainingCalendar
-            onSelect={setSelectedDate}
             today={dateHere(profile.timezone)}
             revision={revision}
-            edit={(w) => {
-              void run(async () => {
-                if (draft || dirty || saving || restoring)
-                  throw Error("请先确认或取消当前待确认内容");
-                const d = await api<Draft>("/workout-drafts", "POST", {
-                  original_id: w.id,
-                });
-                replace(d);
-                setTab("record");
-              });
-            }}
-            add={(date) => {
-              if (draft || dirty) {
-                setError("请先确认或取消当前待确认内容");
-                return;
-              }
-              replace(null, { ...emptyContent(), actual_date: date });
-              setTab("record");
-            }}
+            edit={(w) => openEditor(w)}
+            add={(date) => openEditor(null, date)}
           />
         </div>
         <hr className="workspace-divider" hidden={chatActive} />
@@ -955,7 +927,6 @@ export function App() {
             owner={user.id}
             onSend={() => setChatActive(true)}
             newChatSignal={newChatCount}
-            selectedDate={selectedDate}
             onLock={setModelBusy}
             refresh={async () => {
               await load();
@@ -977,7 +948,7 @@ export function App() {
           }[tab]
         }
         open={tab !== "home"}
-        onCancel={() => setTab("home")}
+        onCancel={() => void closeRecord()}
         width={720}
       >
         {tab === "record" && record}
@@ -1035,23 +1006,18 @@ export function App() {
         </Form>
       </Modal>
       <Modal
-        title="服务端当前待确认内容"
-        open={!!remoteDraft}
-        onCancel={() => setRemoteDraft(null)}
-        okText="采用服务端内容（放弃本地修改）"
+        title="最新训练记录"
+        open={!!remoteWorkout}
+        onCancel={() => setRemoteWorkout(null)}
+        okText="采用最新内容"
         onOk={() => {
-          replace(remoteDraft?.status === "editable" ? remoteDraft : null);
-          setRemoteDraft(null);
+          replace(remoteWorkout);
+          setRemoteWorkout(null);
         }}
       >
-        <p>本地编辑在关闭此窗口时仍会保留。采用服务端内容会放弃本地修改。</p>
-        {remoteDraft && (
-          <>
-            <p>
-              状态：{remoteDraft.status} · 版本 {remoteDraft.version}
-            </p>
-            <TrainingSummary content={remoteDraft.content} catalog={catalog} />
-          </>
+        <p>采用最新内容会替换此浏览器中尚未保存的修改。</p>
+        {remoteWorkout && (
+          <TrainingSummary content={remoteWorkout.content} catalog={catalog} />
         )}
       </Modal>
       <Modal
@@ -1059,29 +1025,10 @@ export function App() {
         open={preview}
         width={800}
         onCancel={() => setPreview(false)}
-        confirmLoading={busy}
-        okButtonProps={{ disabled: modelBusy }}
-        okText="确认保存整次训练"
-        onOk={() =>
-          void run(async () => {
-            if (modelBusy)
-              throw Error("模型正在处理待确认内容，请等待本轮结束");
-            const latest = await saveDraft();
-            if (!latest) throw Error("没有可确认的待确认内容");
-            await api(`/workout-drafts/${latest.id}/confirm`, "POST", {
-              version: latest.version,
-            });
-            setPreview(false);
-            replace(null, {
-              ...emptyContent(),
-              actual_date: dateHere(profile.timezone),
-            });
-            localStorage.removeItem("fitplan-draft-" + user.id);
-            await loadCatalog();
-            bumpRevision();
-            setTab("home");
-          })
-        }
+        confirmLoading={busy || saving}
+        cancelText="取消"
+        okText="保存记录"
+        onOk={() => void run(finishSave)}
       >
         <TrainingSummary content={content} catalog={catalog} />
       </Modal>
@@ -1098,16 +1045,6 @@ export function App() {
           onFinish={(v) =>
             void run(async () => {
               const body = { ...v };
-              for (const key of [
-                "aliases",
-                "muscles",
-                "secondary_muscles",
-                "equipment",
-              ])
-                body[key] = (body[key] || "")
-                  .split(/[、,，]/)
-                  .map((s: string) => s.trim())
-                  .filter(Boolean);
               await api(
                 custom ? "/exercises/" + custom.id : "/exercises",
                 custom ? "PUT" : "POST",
@@ -1121,14 +1058,15 @@ export function App() {
           {[
             ["name", "名称"],
             ["aliases", "别名"],
-            ["muscles", "主要肌群"],
+            ["primary_muscles", "主要肌群"],
             ["secondary_muscles", "辅助肌群"],
             ["equipment", "器械"],
+            ["description", "动作说明"],
           ].map(([name, label]) => (
             <Form.Item
               key={name}
               name={name}
-              label={label + (name === "name" ? "" : "（顿号分隔）")}
+              label={label + (["name", "description"].includes(name) ? "" : "（顿号分隔）")}
               rules={name === "name" ? [{ required: true }] : []}
             >
               <Input />

@@ -1,5 +1,5 @@
 """Message and tool-result contracts shared by provider, runner and tools."""
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -41,3 +41,15 @@ def tool_result(ok, data=None, error=None):
     if error is not None:
         result['error'] = ToolError.model_validate(error).model_dump()
     return result
+
+
+class ExecutionResult(Schema):
+    """Scheduler outcome independent of tool permissions and business domain."""
+    data: Any = None
+    action: object | None = None
+    error: ToolError | None = None
+    continuation: Literal['continue', 'await_confirmation'] = 'continue'
+
+    def message_result(self):
+        return tool_result(self.error is None, data=self.data,
+                           error=self.error.model_dump() if self.error else None)

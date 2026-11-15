@@ -68,7 +68,7 @@ async def run(app, turn_id, user_id, token):
                 schemas = registry.schemas(read_only)
                 if messages is None:
                     messages = context.fresh_messages(db, user_id, row.conversation_id,
-                        (row.context or {}).get('mode', 'edit'), (row.context or {}).get('selected_date'),
+                        (row.context or {}).get('mode', 'edit'),
                         schemas, read_only=read_only)
             model_calls += 1
             # Every round re-checks the input budget and caps output tokens to
@@ -91,9 +91,9 @@ async def run(app, turn_id, user_id, token):
             names = [call.name for call in reply.calls]
             over_budget = len(reply.calls) > LIMITS['tool_calls'] - tool_calls_used
             if over_budget or executor.batch_needs_single(names, registry):
-                # A batch containing a write tool must hold exactly one call;
+                # A batch requiring confirmation must hold exactly one call;
                 # every call in the batch gets a correctable error result.
-                error = {'code': 'batch_write_single', 'message': '包含写操作的批次只能有一个工具调用，请单独调用。'}
+                error = {'code': 'batch_write_single', 'message': '包含需用户确认操作的批次只能有一个工具调用，请单独调用。'}
                 if over_budget:
                     error = {'code': 'tool_call_limit', 'message': '调用额度不足，本批次未执行。'}
                 tool_calls_used += len(reply.calls)
@@ -117,7 +117,7 @@ async def run(app, turn_id, user_id, token):
                     return
                 continue
             # Serial execution: persist the assistant call batch, then every
-            # result. Read-only batches execute all calls; a write call in a
+            # result. Read-only batches execute all calls; a confirmation call in a
             # batch was already rejected above, so at most one card is created.
             with write_transaction(engine) as db:
                 _alive(db, turn_id, user_id, token)
@@ -136,12 +136,14 @@ async def run(app, turn_id, user_id, token):
                 for call in reply.calls:
                     _remaining(deadline)
                     _alive(db, turn_id, user_id, token)
-                    result, action = executor.run(ctx, registry, call.name, call.arguments)
+                    outcome = executor.run(ctx, registry, call.name, call.arguments)
+                    result = outcome.message_result()
+                    action = outcome.action
                     _remaining(deadline)
                     add_message(db, row.conversation_id, turn_id, 'tool',
                         content=executor.result_text(result), tool_call_id=call.id)
                     messages.append({'role': 'tool', 'tool_call_id': call.id, 'content': executor.result_text(result)})
-                    if action is not None:
+                    if outcome.continuation == 'await_confirmation':
                         break
                 if action is not None:
                     _remaining(deadline)

@@ -107,7 +107,7 @@ function Details({
         {(details.items || []).map((item: any, index: number) => (
           <p key={item.exercise_id || index}>
             {names[item.exercise_id] || item.exercise_id}：
-            {item.available ? "可选" : "未启用"}
+            {item.active ? "可选" : "未启用"}
           </p>
         ))}
       </>
@@ -122,12 +122,15 @@ export function ConversationActionCard({
   action,
   names,
   working,
+  locked,
   onConfirm,
   onCancel,
 }: {
   action: Action;
   names: Record<string, string>;
   working: { actionId: string; kind: "confirm" | "cancel" } | null;
+  /** Confirm pauses while newer conversation content is still processing. */
+  locked?: boolean;
   onConfirm: (action: Action) => void;
   onCancel: (action: Action) => void;
 }) {
@@ -150,7 +153,14 @@ export function ConversationActionCard({
           {action.summary}
         </Typography.Paragraph>
       )}
-      <Details action={action} names={names} />
+      {(action.details?.missing_fields || []).length > 0 && (
+        <Alert type="info" message={`未记录${action.details.missing_fields.map((field: string) => field === "reps" ? "次数" : "重量").join("、")}`} />
+      )}
+      {(action.details?.creating_custom || []).length > 0 && (
+        <Alert type="warning" message={`将创建自定义动作：${action.details.creating_custom.join("、")}`} />
+      )}
+      {action.operation === "undo_operation" && <p>{action.details?.effect}</p>}
+      <details><summary>查看详情</summary><Details action={action} names={names} /></details>
       {failed && action.result?.error?.message && (
         <Alert
           type="error"
@@ -166,7 +176,7 @@ export function ConversationActionCard({
               type="primary"
               aria-label={`确认执行${operationName(action.operation)}`}
               loading={busyHere && working?.kind === "confirm"}
-              disabled={busyAnywhere}
+              disabled={busyAnywhere || locked}
               onClick={() => onConfirm(action)}
             >
               确认执行

@@ -647,9 +647,6 @@ header {
 .exercise-tile.selectable span {
   color: #5277aa;
 }
-.exercise-tile.archived {
-  opacity: 0.55;
-}
 .exercise-tile > button:disabled {
   cursor: default;
 }

@@ -3,7 +3,6 @@ import asyncio
 import json
 import time
 from typing import Annotated, Literal
-from datetime import date
 
 from fastapi import Depends, Header, Request
 from fastapi.responses import StreamingResponse
@@ -30,7 +29,6 @@ class ConversationCreate(Schema):
 class SendMessage(Schema):
     text: str = Field(min_length=1, max_length=8000)
     mode: Literal['edit', 'read'] = 'edit'
-    selected_date: date | None = None
 
 
 def register(app, engine, identity, mutate, *_):
@@ -168,6 +166,19 @@ def register(app, engine, identity, mutate, *_):
         return stream(result['id'], user_id)
 
     @app.post('/api/conversation-actions/{object_id}/{operation}')
-    def action(object_id: str, operation: Literal['confirm', 'cancel'], body: Version, request: Request, x_request_id: RequestId, user_id=Depends(identity)):
-        return mutate(request, user_id, x_request_id, body,
-                      lambda db: actions_module.apply(db, user_id, object_id, operation, body.version))
+    async def action(object_id: str, operation: Literal['confirm', 'cancel'], body: Version, request: Request, x_request_id: RequestId, user_id=Depends(identity)):
+        def decide(db):
+            row = owned(db, ConversationAction, object_id, user_id)
+            if operation == 'confirm' and row.status in ('conflict', 'failed'):
+                result = actions_module.action_view(row)
+            else:
+                result = actions_module.apply(db, user_id, object_id, operation, body.version)
+            if row.status in ('confirmed', 'cancelled', 'conflict', 'failed'):
+                turns.continue_action(db, user_id, row)
+                result = actions_module.action_view(row)
+            return result
+        result = mutate(request, user_id, x_request_id, body, decide)
+        continuation_id = (result.get('result') or {}).get('continuation_turn_id')
+        if continuation_id:
+            launch(continuation_id, user_id)
+        return result

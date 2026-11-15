@@ -63,10 +63,11 @@ Name = Annotated[str, Field(min_length=1, max_length=100)]
 
 class ExerciseInput(Schema):
     name: Name
-    aliases: list[Name] = Field(default_factory=list, max_length=50)
-    muscles: list[Name] = Field(default_factory=list, max_length=50)
-    secondary_muscles: list[Name] = Field(default_factory=list, max_length=50)
-    equipment: list[Name] = Field(default_factory=list, max_length=50)
+    aliases: str = Field(default='', max_length=2000)
+    primary_muscles: str = Field(default='', max_length=2000)
+    secondary_muscles: str = Field(default='', max_length=2000)
+    equipment: str = Field(default='', max_length=2000)
+    description: str = Field(default='', max_length=4000)
 
 
 class ExerciseUpdate(ExerciseInput, Version):
@@ -75,7 +76,7 @@ class ExerciseUpdate(ExerciseInput, Version):
 
 class Preference(Version):
     exercise_id: str
-    available: bool
+    active: bool
 
 
 class PreferenceBatch(Schema):
@@ -100,12 +101,9 @@ class SetInput(Schema):
 
 
 class WorkoutExerciseInput(Schema):
-    id: str | None = None
     exercise_id: str | None = None
     custom_name: Name | None = None
     confirm_create: bool = False
-    weight_mode: Literal['external', 'bodyweight', 'added', 'assisted', 'unknown'] = 'unknown'
-    weight_scope: Literal['total', 'per_side', 'unknown'] = 'unknown'
     sets: list[SetInput] = Field(min_length=1, max_length=100)
 
     @model_validator(mode='after')
@@ -123,15 +121,8 @@ class WorkoutContent(Schema):
     missing_information: dict[str, Literal['pending', 'asked', 'skipped']] = Field(default_factory=dict)
 
 
-class DraftCreate(Schema):
-    content: WorkoutContent | None = None
-    original_id: str | None = None
-
-    @model_validator(mode='after')
-    def source(self):
-        if (self.content is None) == (self.original_id is None):
-            raise ValueError('Provide content or original_id')
-        return self
+class WorkoutCreate(Schema):
+    content: WorkoutContent
 
 
 class ContentUpdate(Version):

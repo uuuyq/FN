@@ -1,40 +1,42 @@
 """Catalog tools: exercise availability preferences and user equipment."""
-from ...models import Equipment, ExercisePreference
+from ...models import Equipment
 from ...schemas import PreferenceBatch, EquipmentInput
 from ...services import exercise, version, fail
-from .registry import Tool
+from .registry import Tool, WriteSummary
 
 
-class UpdatePreferences(PreferenceBatch):
+class UpdatePreferences(WriteSummary, PreferenceBatch):
     pass
 
 
-class AddEquipment(EquipmentInput):
+class AddEquipment(WriteSummary, EquipmentInput):
     pass
 
 
 def validate_preferences(ctx, params):
+    if len({item.exercise_id for item in params.items}) != len(params.items):
+        fail(422, 'duplicate_exercise')
     for item in params.items:
-        exercise(ctx.db, item.exercise_id, ctx.user_id)
-        pref = ctx.db.get(ExercisePreference, (ctx.user_id, item.exercise_id))
-        version(pref or _default_pref(), item.version)
-
-
-def _default_pref():
-    from ...models import ExercisePreference as model
-    return model(version=1)
+        from ...modules.catalog.service import get_preference
+        row = exercise(ctx.db, item.exercise_id, ctx.user_id)
+        pref = get_preference(ctx.db, ctx.user_id, row)
+        if pref is None:
+            if item.version != 1:
+                fail(409, 'version_conflict', latest_version=1)
+        else:
+            version(pref, item.version)
 
 
 def execute_preferences(ctx, params):
     from ...modules.catalog.service import update_preferences
-    return update_preferences(ctx.db, ctx.user_id, params)
+    return update_preferences(ctx.db, ctx.user_id, PreferenceBatch.model_validate(params.model_dump(exclude={"summary"})))
 
 
 def preferences_summary(ctx, payload):
     parts = []
     for item in payload['items']:
         name = exercise(ctx.db, item['exercise_id'], ctx.user_id).name
-        parts.append('{} → {}'.format(name, '可用' if item['available'] else '不可用'))
+        parts.append('{} → {}'.format(name, '可用' if item['active'] else '不可用'))
     return '更新动作可用偏好：' + '、'.join(parts)
 
 
@@ -49,7 +51,7 @@ def validate_equipment(ctx, params):
 
 def execute_equipment(ctx, params):
     from ...modules.catalog.service import add_equipment
-    return add_equipment(ctx.db, ctx.user_id, params)
+    return add_equipment(ctx.db, ctx.user_id, EquipmentInput.model_validate(params.model_dump(exclude={"summary"})))
 
 
 def equipment_summary(ctx, payload):
@@ -61,11 +63,11 @@ def equipment_details(ctx, payload):
 
 
 UPDATE_PREFERENCES = Tool(name='update_preferences',
-    description='更新用户的动作可用偏好。每项包含目录中的 exercise_id、目标 available 状态及 version（使用上下文的 preference_version），只提交需要变更的项目。工具会返回前端确认卡片，用户点击确认后才更新。',
-    model=UpdatePreferences, kind='write', validate=validate_preferences, execute=execute_preferences,
+    description='批量更新指定动作的可用偏好。每项使用 exercise_id、active 和偏好版本 version，返回更新后的偏好。',
+    model=UpdatePreferences, kind='write', execution='user_confirmation', validate=validate_preferences, execute=execute_preferences,
     operation=lambda payload: 'update_preferences', summary=preferences_summary, details=preferences_details)
 
 ADD_EQUIPMENT = Tool(name='add_equipment',
-    description='为用户新增可用器械，提供名称；上下文存在对应公共器械 ID 时可一并提供。工具会返回前端确认卡片，用户点击确认后才新增。',
-    model=AddEquipment, kind='write', validate=validate_equipment, execute=execute_equipment,
+    description='新增用户可用器械，包含名称和可选的公共器械引用 equipment_id，返回新增器械。',
+    model=AddEquipment, kind='write', execution='user_confirmation', validate=validate_equipment, execute=execute_equipment,
     operation=lambda payload: 'add_equipment', summary=equipment_summary, details=equipment_details)

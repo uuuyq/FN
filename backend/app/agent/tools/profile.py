@@ -2,10 +2,10 @@
 from ...models import User
 from ...schemas import Profile
 from ...services import version
-from .registry import Tool
+from .registry import Tool, WriteSummary
 
 
-class UpdateProfile(Profile):
+class UpdateProfile(WriteSummary, Profile):
     pass
 
 
@@ -19,22 +19,24 @@ def validate_update(ctx, params):
 
 def execute_update(ctx, params):
     from ...modules.profile.service import update_profile
-    return update_profile(ctx.db, ctx.user_id, params)
+    return update_profile(ctx.db, ctx.user_id, Profile.model_validate(params.model_dump(exclude={"summary"})))
 
 
 def update_summary(ctx, payload):
-    current = ctx.db.get(User, ctx.user_id).profile
+    user = ctx.db.get(User, ctx.user_id)
+    current = Profile(version=user.profile_version, **(user.profile or {})).model_dump(exclude={'version'})
     changed = [label for field, label in _FIELDS.items() if payload.get(field) != current.get(field)]
     return '更新个人条件' + (('：' + '、'.join(changed)) if changed else '')
 
 
 def update_details(ctx, payload):
-    current = ctx.db.get(User, ctx.user_id).profile
+    user = ctx.db.get(User, ctx.user_id)
+    current = Profile(version=user.profile_version, **(user.profile or {})).model_dump(exclude={'version'})
     return {'before': current, 'after': {key: value for key, value in payload.items() if key != 'version'},
             'version': payload['version']}
 
 
 UPDATE_PROFILE = Tool(name='update_profile',
-    description='更新用户个人条件。基于上下文中的 profile 提交完整更新后内容及当前版本，保留用户未要求修改的字段。工具会返回前端确认卡片，用户点击确认后才更新。',
-    model=UpdateProfile, kind='write', validate=validate_update, execute=execute_update,
+    description='完整更新用户个人条件，使用 version 校验当前资料版本，返回更新后的资料。',
+    model=UpdateProfile, kind='write', execution='user_confirmation', validate=validate_update, execute=execute_update,
     operation=lambda payload: 'update_profile', summary=update_summary, details=update_details)

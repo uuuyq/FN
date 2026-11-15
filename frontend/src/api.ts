@@ -6,13 +6,10 @@ export type Group = {
   notes: string;
 };
 export type Entry = {
-  id?: string;
   exercise_id?: string | null;
   custom_name?: string | null;
   confirm_create?: boolean;
-  name_snapshot?: string;
-  weight_mode: string;
-  weight_scope: string;
+  name?: string;
   sets: Group[];
 };
 export type Content = {
@@ -22,30 +19,22 @@ export type Content = {
   exercises: Entry[];
   missing_information: Record<string, string>;
 };
-export type Draft = {
-  id: string;
-  version: number;
-  status: string;
-  content: Content;
-  original_id?: string | null;
-};
 export type Workout = {
   id: string;
   version: number;
-  status: "active" | "closed";
   deleted_at: string | null;
   content: Content;
 };
 export type Exercise = {
   id: string;
   name: string;
-  aliases: string[];
-  muscles: string[];
-  secondary_muscles: string[];
-  equipment: string[];
-  archived: boolean;
+  aliases: string;
+  primary_muscles: string;
+  secondary_muscles: string;
+  equipment: string;
   owner_id: string | null;
-  available: boolean;
+  active: boolean;
+  description: string;
   preference_version: number;
   version: number;
 };
@@ -165,5 +154,5 @@ export const blankSet = (): Group => ({
 });
 export const clean = (content: Content): Content => ({
   ...content,
-  exercises: content.exercises.map(({ name_snapshot, ...item }) => item),
+  exercises: content.exercises.map(({ name, ...item }) => item),
 });

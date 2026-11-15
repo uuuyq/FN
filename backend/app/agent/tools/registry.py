@@ -2,7 +2,12 @@
 from dataclasses import dataclass
 from typing import Callable, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from ...schemas import Schema
+
+
+class WriteSummary(Schema):
+    summary: str | None = Field(default=None, max_length=500, description="本次操作的简短说明，概括新增内容、修改差异、删除目标或撤销效果，仅供展示")
 
 
 @dataclass
@@ -11,7 +16,8 @@ class Tool:
     description: str
     model: type[BaseModel]
     kind: Literal['read', 'write']
-    execute: Callable  # (ctx, params) -> data dict; write tools run after confirmation
+    execution: Literal['direct', 'user_confirmation']
+    execute: Callable  # (ctx, params) -> data, scheduled according to execution
     validate: Callable | None = None  # (ctx, params) read-only checks, shared by proposal and confirm
     operation: Callable | None = None  # payload -> card operation label
     summary: Callable | None = None  # (ctx, payload) -> confirmation card summary
@@ -20,8 +26,10 @@ class Tool:
     def __post_init__(self):
         if self.kind not in ('read', 'write'):
             raise ValueError(f'Tool {self.name} must declare kind=read|write')
-        if self.kind == 'write' and not (self.validate and self.operation and self.summary and self.details):
-            raise ValueError(f'Write tool {self.name} needs validate, operation, summary and details')
+        if self.execution not in ('direct', 'user_confirmation'):
+            raise ValueError(f'Tool {self.name} needs an execution strategy')
+        if self.execution == 'user_confirmation' and not (self.validate and self.operation and self.summary and self.details):
+            raise ValueError(f'Confirmation tool {self.name} needs validate, operation, summary and details')
 
 
 class ToolRegistry:

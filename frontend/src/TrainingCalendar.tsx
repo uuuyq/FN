@@ -7,9 +7,7 @@ export function TrainingCalendar({
   revision,
   edit,
   add,
-  onSelect,
 }: {
-  onSelect: (date: string) => void;
   today: string;
   revision: number;
   edit: (w: Workout) => void;
@@ -119,7 +117,6 @@ export function TrainingCalendar({
                   y: rect.top + rect.height / 2,
                 });
                 setSelected(date);
-                onSelect(date);
               }}
             >
               <span>{i + 1}</span>
@@ -196,9 +193,9 @@ export function TrainingCalendar({
             title={w.content.actual_time || "训练记录"}
           >
             {w.content.exercises.map((entry, index) => (
-              <div className="date-exercise" key={entry.id || index}>
+              <div className="date-exercise" key={index}>
                 <strong>
-                  {entry.name_snapshot || entry.custom_name || "动作"}
+                  {entry.name || entry.custom_name || "动作"}
                 </strong>
                 <table className="set-table">
                   <thead>
