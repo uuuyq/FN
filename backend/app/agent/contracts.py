@@ -27,8 +27,8 @@ class ModelReply(Schema):
     @model_validator(mode='after')
     def shape(self):
         if self.type == 'tool_calls':
-            if not self.calls or self.content is not None:
-                raise ValueError('Tool-call replies need calls and no text content')
+            if not self.calls:
+                raise ValueError('Tool-call replies need calls')
         elif self.content is None:
             raise ValueError('Text replies need content')
         return self

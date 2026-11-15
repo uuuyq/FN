@@ -18,6 +18,7 @@ from . import actions as actions_module
 from . import conversations as conversations_module
 from . import runner, turns
 from .provider import Provider, ProviderError, settings
+from .streaming import TurnStream
 
 RequestId = Annotated[str, Header(alias='X-Request-ID', min_length=8, max_length=100)]
 
@@ -34,6 +35,7 @@ class SendMessage(Schema):
 def register(app, engine, identity, mutate, *_):
     app.state.ai_provider = Provider()
     tasks = {}
+    app.state.turn_streams = {}
 
     def user_ai_config(user_id):
         with Session(engine) as db:
@@ -45,6 +47,11 @@ def register(app, engine, identity, mutate, *_):
         try:
             await runner.run(app, turn_id, user_id, token)
         finally:
+            channel = app.state.turn_streams.get(turn_id)
+            def cleanup():
+                if app.state.turn_streams.get(turn_id) is channel:
+                    app.state.turn_streams.pop(turn_id, None)
+            asyncio.get_running_loop().call_later(300, cleanup)
             if tasks.get(turn_id, (None, None))[1] is asyncio.current_task():
                 tasks.pop(turn_id, None)
 
@@ -55,6 +62,7 @@ def register(app, engine, identity, mutate, *_):
             if row.status == 'running' and (not existing or existing[0] != row.token):
                 if existing:
                     existing[1].cancel()
+                app.state.turn_streams[turn_id] = TurnStream(turn_id)
                 tasks[turn_id] = (row.token, asyncio.create_task(execute(row.id, user_id, row.token)))
 
     def read_turn(turn_id, user_id):
@@ -66,17 +74,40 @@ def register(app, engine, identity, mutate, *_):
 
     def stream(turn_id, user_id):
         async def events():
-            yield 'event: accepted\ndata: ' + json.dumps({'turn_id': turn_id}) + '\n\n'
-            last_heartbeat = time.monotonic()
-            while True:
-                row = read_turn(turn_id, user_id)
-                if row['status'] != 'running':
-                    yield 'id: ' + turn_id + ':done\nevent: ' + ('completed' if row['status'] == 'succeeded' else 'failed') + '\ndata: ' + json.dumps(row, ensure_ascii=False) + '\n\n'
-                    break
-                if time.monotonic() - last_heartbeat > 10:
-                    yield ': heartbeat\n\n'
-                    last_heartbeat = time.monotonic()
-                await asyncio.sleep(.25)
+            def encode(kind, payload):
+                return 'event: ' + kind + '\ndata: ' + json.dumps(payload, ensure_ascii=False) + '\n\n'
+            channel = app.state.turn_streams.setdefault(turn_id, TurnStream(turn_id))
+            queue, snapshot = channel.subscribe()
+            try:
+                yield encode('accepted', {'turn_id': turn_id})
+                yield encode('snapshot', snapshot)
+                last_heartbeat = time.monotonic()
+                while True:
+                    # Drain pending deltas before publishing a durable terminal state.
+                    while not queue.empty():
+                        event = queue.get_nowait()
+                        if event is None:
+                            return
+                        yield encode(*event)
+                    row = read_turn(turn_id, user_id)
+                    if row['status'] != 'running':
+                        yield encode('completed' if row['status'] == 'succeeded' else 'failed', row)
+                        break
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=.25)
+                        if event is None:
+                            return
+                        yield encode(*event)
+                    except TimeoutError:
+                        pass
+                    if time.monotonic() - last_heartbeat > 10:
+                        yield ': heartbeat\n\n'
+                        last_heartbeat = time.monotonic()
+            finally:
+                channel.subscribers.discard(queue)
+                if read_turn(turn_id, user_id)['status'] != 'running':
+                    if not channel.messages:
+                        app.state.turn_streams.pop(turn_id, None)
         return StreamingResponse(events(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.get('/api/ai/status')

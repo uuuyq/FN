@@ -1,5 +1,5 @@
 import { getErrorMessage } from "./errors";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  message,
   Select,
   Space,
   Tabs,
@@ -29,11 +30,15 @@ import { Brand } from "./Brand";
 import { useWorkoutEditor } from "./useWorkoutEditor";
 import { Conversation } from "./Conversation";
 import { TrainingCalendar } from "./TrainingCalendar";
+import { EquipmentCatalog } from "./EquipmentCatalog";
 import { ExerciseCatalog } from "./ExerciseCatalog";
 const { Title, Text } = Typography;
 const dateHere = (timeZone = "Asia/Shanghai") =>
   new Date().toLocaleDateString("sv-SE", { timeZone });
 export function App() {
+  const [messageApi, messageContextHolder] = message.useMessage();
+  const settingsPending = useRef(false);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [modal, modalContextHolder] = Modal.useModal();
   const [registering, setRegistering] = useState(false);
   const [user, setUser] = useState<any>(null),
@@ -55,8 +60,8 @@ export function App() {
     active,
     setContent: setDraftContent,
     replace,
+    discard,
     save: saveRecord,
-    restoring,
     saving,
     saveError,
   } = useWorkoutEditor(user?.id, emptyContent);
@@ -66,15 +71,13 @@ export function App() {
   const setContent = setDraftContent;
   const [preview, setPreview] = useState(false);
   const [profile, setProfile] = useState<any>({}),
-    [aiConfig, setAiConfig] = useState<any>({}),
-    [equipment, setEquipment] = useState<any[]>([]),
-    [sharedEquipment, setSharedEquipment] = useState<any[]>([]);
+    [aiConfig, setAiConfig] = useState<any>({});
   const [tab, setTab] = useState("home"),
     [custom, setCustom] = useState<Exercise | null | false>(false),
     [customForm] = Form.useForm(),
     [aiForm] = Form.useForm(),
-    [aiTestOk, setAiTestOk] = useState(false),
-    [equipmentName, setEquipmentName] = useState("");
+    [accountForm] = Form.useForm();
+  const [catalogSection, setCatalogSection] = useState("exercises");
   const run = async (fn: () => Promise<void>) => {
     setError("");
     setBusy(true);
@@ -84,6 +87,24 @@ export function App() {
       setError(getErrorMessage(e));
     } finally {
       setBusy(false);
+    }
+  };
+  const runSettings = async (
+    fn: () => Promise<void | string>,
+    success?: string,
+  ) => {
+    if (settingsPending.current) return;
+    settingsPending.current = true;
+    setSettingsBusy(true);
+    messageApi.destroy();
+    try {
+      const result = await fn();
+      void messageApi.success(result || success!);
+    } catch (e) {
+      void messageApi.error(getErrorMessage(e));
+    } finally {
+      settingsPending.current = false;
+      setSettingsBusy(false);
     }
   };
   const loadCatalog = async () => {
@@ -100,14 +121,12 @@ export function App() {
     setCatalog(rows);
   };
   const [revision, setRevision] = useState(0);
-  const [chatActive, setChatActive] = useState(false);
-  const [newChatCount, setNewChatCount] = useState(0);
-  const [accountOpen, setAccountOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState("profile");
   const bumpRevision = () => setRevision((v) => v + 1);
   const meaningful = content.exercises.length > 0;
   const closeRecord = async () => {
-    if (tab === "record" && active)
-      setNotice("编辑内容已保留在此浏览器，可继续编辑。");
+    if (saving) return;
+    if (tab === "record") discard();
     setTab("home");
   };
   const finishSave = async () => {
@@ -132,23 +151,12 @@ export function App() {
       setNotice("");
       setTab("record");
     };
-    if (active && (!workout || workout.id !== original?.id)) {
-      modal.confirm({
-        title: "此浏览器中有未保存的编辑内容",
-        content: "是否放弃当前内容，打开另一条记录？",
-        okText: "放弃并打开",
-        cancelText: "保留当前内容",
-        onOk: open,
-      });
-    } else if (active) setTab("record");
-    else open();
+    open();
   };
   const load = async () => {
     await loadCatalog();
     setProfile(await api("/profile"));
     setAiConfig(await api("/ai-config"));
-    setEquipment((await api("/user-equipment")).items);
-    setSharedEquipment((await api("/equipment")).items);
   };
   useEffect(() => {
     api("/auth/me")
@@ -187,6 +195,7 @@ export function App() {
   if (!user)
     return (
       <main className="login">
+        {messageContextHolder}
         <Brand />
         {error && <Alert type="error" message={error} />}
         <Form
@@ -289,30 +298,25 @@ export function App() {
   const record = (
     <>
       <fieldset
-        disabled={restoring || busy || preview || saving || pending}
+        disabled={busy || preview || saving || pending}
         style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}
       >
         <div role="status" aria-live="polite" style={{ marginBottom: 16 }}>
-          {restoring
-            ? "正在恢复本地编辑内容"
-            : saveError
-              ? saveError.message
-              : saving
-                ? "保存中"
-                : active
-                  ? "编辑内容仅保存在此浏览器，点击保存后提交"
-                  : "新记录，尚未保存"}
+          {saveError
+            ? saveError.message
+            : saving
+              ? "保存中"
+              : active
+                ? "尚未保存"
+                : "新记录，尚未保存"}
           {saveError && (
-            <Button
-              disabled={busy || restoring}
-              onClick={() => void run(finishSave)}
-            >
+            <Button disabled={busy} onClick={() => void run(finishSave)}>
               重试保存
             </Button>
           )}
           {original && !pending && (
             <Button
-              disabled={busy || saving || restoring}
+              disabled={busy || saving}
               onClick={() =>
                 void run(async () => {
                   setRemoteWorkout(
@@ -391,8 +395,7 @@ export function App() {
                 optionFilterProp="label"
                 value={entry.exercise_id || "custom"}
                 options={[
-                  ...catalog
-                    .map((e) => ({ value: e.id, label: e.name })),
+                  ...catalog.map((e) => ({ value: e.id, label: e.name })),
                   { value: "custom", label: "未知动作（确认时创建）" },
                 ]}
                 onChange={(v) =>
@@ -521,7 +524,8 @@ export function App() {
                 exercises: [
                   ...content.exercises,
                   {
-                    exercise_id: (catalog.find((e) => e.active) ?? catalog[0])?.id,
+                    exercise_id: (catalog.find((e) => e.active) ?? catalog[0])
+                      ?.id,
                     sets: [blankSet()],
                   },
                 ],
@@ -534,7 +538,7 @@ export function App() {
             aria-label="保存记录"
             type="primary"
             loading={busy || saving}
-            disabled={!meaningful || restoring}
+            disabled={!meaningful}
             onClick={() => void run(finishSave)}
           >
             保存记录
@@ -583,78 +587,10 @@ export function App() {
       )}
     </>
   );
-  const catalogEquipment = (
-    <>
-      <Title level={3}>实际可用器械</Title>
-      <Space wrap>
-        <Select
-          placeholder="选择预置器械"
-          style={{ width: 180 }}
-          options={sharedEquipment.map((e) => ({ value: e.id, label: e.name }))}
-          onChange={(id) =>
-            void run(async () => {
-              await api("/user-equipment", "POST", {
-                equipment_id: id,
-                name: sharedEquipment.find((e) => e.id === id).name,
-              });
-              await load();
-            })
-          }
-        />
-        <Input
-          placeholder="自定义器械名称"
-          value={equipmentName}
-          onChange={(e) => setEquipmentName(e.target.value)}
-        />
-        <Button
-          disabled={!equipmentName || busy}
-          onClick={() =>
-            void run(async () => {
-              await api("/user-equipment", "POST", { name: equipmentName });
-              setEquipmentName("");
-              await load();
-            })
-          }
-        >
-          添加器械
-        </Button>
-      </Space>
-      {equipment.map((e) => (
-        <div className="group" key={e.id}>
-          <Input
-            aria-label="器械名称"
-            defaultValue={e.name}
-            onBlur={(ev) => {
-              if (ev.target.value !== e.name)
-                void run(async () => {
-                  await api("/user-equipment/" + e.id, "PUT", {
-                    name: ev.target.value,
-                    equipment_id: e.equipment_id,
-                    version: e.version,
-                  });
-                  await load();
-                });
-            }}
-          />
-          <Button
-            disabled={busy}
-            onClick={() =>
-              void run(async () => {
-                await api("/user-equipment/" + e.id, "DELETE", {
-                  version: e.version,
-                });
-                await load();
-              })
-            }
-          >
-            移除
-          </Button>
-        </div>
-      ))}
-    </>
-  );
   const catalogPage = (
     <Tabs
+      activeKey={catalogSection}
+      onChange={setCatalogSection}
       items={[
         {
           key: "exercises",
@@ -684,11 +620,19 @@ export function App() {
                   equipment: e.equipment,
                 });
               }}
-
             />
           ),
         },
-        { key: "equipment", label: "器械", children: catalogEquipment },
+        {
+          key: "equipment",
+          label: "器械",
+          children: (
+            <EquipmentCatalog
+              active={tab === "catalog" && catalogSection === "equipment"}
+              revision={revision}
+            />
+          ),
+        },
       ]}
     />
   );
@@ -698,11 +642,11 @@ export function App() {
       key={profile.version}
       initialValues={profile}
       onFinish={(v) =>
-        void run(async () => {
+        void runSettings(async () => {
           setProfile(
             await api("/profile", "PUT", { ...v, version: profile.version }),
           );
-        })
+        }, "个人条件已保存")
       }
     >
       {[
@@ -721,14 +665,13 @@ export function App() {
       <Form.Item name="minutes_per_session" label="单次时间（分钟）">
         <InputNumber min={1} max={1440} />
       </Form.Item>
-      <Button htmlType="submit" loading={busy}>
+      <Button htmlType="submit" loading={settingsBusy}>
         保存个人条件
       </Button>
     </Form>
   );
   const aiSettings = (
     <>
-      <Title level={3}>AI 模型连接</Title>
       {aiConfig.configured ? (
         <Text>
           当前：{aiConfig.model} · {aiConfig.base_url}
@@ -746,16 +689,14 @@ export function App() {
           model: aiConfig.model,
         }}
         onFinish={(v) =>
-          void run(async () => {
-            setAiTestOk(false);
+          void runSettings(async () => {
             setAiConfig(
               await api("/ai-config", "PUT", {
                 ...v,
                 version: aiConfig.version ?? 1,
               }),
             );
-            setAiTestOk(true);
-          })
+          }, "AI 模型配置已保存")
         }
       >
         <Form.Item name="vendor" label="模型厂商">
@@ -799,46 +740,126 @@ export function App() {
         </Form.Item>
         <Space wrap>
           <Button
-            disabled={busy}
+            disabled={settingsBusy}
             onClick={() =>
-              void run(async () => {
-                setAiTestOk(false);
+              void runSettings(async () => {
                 await api(
                   "/ai-config/test",
                   "POST",
                   await aiForm.validateFields(),
                 );
-                setAiTestOk(true);
-              })
+              }, "连接测试通过")
             }
           >
             测试连接
           </Button>
-          <Button htmlType="submit" loading={busy}>
+          <Button htmlType="submit" loading={settingsBusy}>
             保存
           </Button>
         </Space>
-        {aiTestOk && (
-          <div>
-            <Text type="success">测试通过，配置已可用。</Text>
-          </div>
-        )}
       </Form>
     </>
   );
   const settingsPage = (
-    <Tabs
-      className="settings-tabs"
-      tabPosition="left"
-      items={[
-        { key: "profile", label: "个人条件", children: profileForm },
-        { key: "ai", label: "AI 模型", children: aiSettings },
-      ]}
-    />
+    <div className="settings-layout">
+      <nav aria-label="设置类别">
+        {[
+          ["profile", "个人条件"],
+          ["ai", "AI 模型"],
+          ["security", "安全"],
+        ].map(([key, label]) => (
+          <button
+            key={key}
+            aria-current={settingsSection === key ? "location" : undefined}
+            onClick={() =>
+              document
+                .getElementById("settings-" + key)
+                ?.scrollIntoView({ block: "start", behavior: "smooth" })
+            }
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      <div
+        className="settings-content"
+        onScroll={(event) => {
+          const container = event.currentTarget;
+          const sections = Array.from(
+            container.querySelectorAll<HTMLElement>("section"),
+          );
+          const current = sections
+            .filter(
+              (section) =>
+                section.getBoundingClientRect().top <=
+                container.getBoundingClientRect().top + 60,
+            )
+            .slice(-1)[0];
+          setSettingsSection(
+            container.scrollTop + container.clientHeight >=
+              container.scrollHeight - 2
+              ? "security"
+              : current?.id.replace("settings-", "") || "profile",
+          );
+        }}
+      >
+        <section id="settings-profile">{profileForm}</section>
+        <section id="settings-ai">{aiSettings}</section>
+        <section id="settings-security">
+          <Form
+            form={accountForm}
+            layout="vertical"
+            onFinish={(values) =>
+              void runSettings(async () => {
+                const r = await api(
+                  "/auth/account",
+                  "PUT",
+                  Object.fromEntries(
+                    Object.entries(values).filter(
+                      ([, v]) => v !== undefined && v !== "",
+                    ),
+                  ),
+                );
+                accountForm.resetFields();
+                if (r.login_required) {
+                  setUser(null);
+                  setCSRF("");
+                } else setUser({ ...user, username: r.username });
+                return r.login_required
+                  ? "账号信息已更新，请重新登录"
+                  : "账号信息已保存";
+              })
+            }
+          >
+            <Form.Item
+              name="current_password"
+              label="当前密码"
+              rules={[{ required: true }]}
+            >
+              <Input.Password autoComplete="current-password" />
+            </Form.Item>
+            <Form.Item name="username" label="新用户名">
+              <Input maxLength={100} />
+            </Form.Item>
+            <Form.Item
+              name="password"
+              label="新密码（至少12个字符，修改后重新登录）"
+              rules={[{ min: 12 }]}
+            >
+              <Input.Password autoComplete="new-password" />
+            </Form.Item>
+            <Button htmlType="submit" type="primary" loading={settingsBusy}>
+              保存账号信息
+            </Button>
+          </Form>
+        </section>
+      </div>
+    </div>
   );
   return (
     <main>
       {modalContextHolder}
+      {messageContextHolder}
       <header>
         <div>
           <Brand />
@@ -849,7 +870,6 @@ export function App() {
             menu={{
               items: [
                 { key: "settings", label: "设置" },
-                { key: "account", label: "账号" },
                 { type: "divider" },
                 {
                   key: "logout",
@@ -866,7 +886,6 @@ export function App() {
                     setCSRF("");
                     setNotice("");
                   });
-                else if (key === "account") setAccountOpen(true);
                 else setTab(key);
               },
             }}
@@ -883,19 +902,23 @@ export function App() {
           message={error}
         />
       )}
-      <section className={chatActive ? "workspace chatting" : "workspace"}>
-        {chatActive && (
-          <Button
-            className="return-calendar"
-            onClick={() => {
-              setChatActive(false);
-              setNewChatCount((v) => v + 1);
-            }}
-          >
-            返回
-          </Button>
-        )}
-        <div hidden={chatActive}>
+      <Button
+        className="back-to-top"
+        aria-label="返回顶部"
+        title="返回顶部"
+        onClick={() =>
+          window.scrollTo({
+            top: 0,
+            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+              ? "instant"
+              : "smooth",
+          })
+        }
+      >
+        ⌃
+      </Button>
+      <section className="workspace">
+        <div>
           {notice && (
             <Alert
               closable
@@ -905,14 +928,6 @@ export function App() {
               style={{ marginBottom: 12 }}
             />
           )}
-          {active && (
-            <Button
-              style={{ marginBottom: 12 }}
-              onClick={() => setTab("record")}
-            >
-              继续编辑未保存的记录
-            </Button>
-          )}
           <TrainingCalendar
             today={dateHere(profile.timezone)}
             revision={revision}
@@ -920,13 +935,11 @@ export function App() {
             add={(date) => openEditor(null, date)}
           />
         </div>
-        <hr className="workspace-divider" hidden={chatActive} />
+        <hr className="workspace-divider" />
         <div className="conversation-workspace">
           {" "}
           <Conversation
             owner={user.id}
-            onSend={() => setChatActive(true)}
-            newChatSignal={newChatCount}
             onLock={setModelBusy}
             refresh={async () => {
               await load();
@@ -954,56 +967,6 @@ export function App() {
         {tab === "record" && record}
         {tab === "catalog" && catalogPage}
         {tab === "settings" && settingsPage}
-      </Modal>
-      <Modal
-        title="账号"
-        open={accountOpen}
-        footer={null}
-        onCancel={() => setAccountOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          layout="vertical"
-          onFinish={(values) =>
-            void run(async () => {
-              const r = await api(
-                "/auth/account",
-                "PUT",
-                Object.fromEntries(
-                  Object.entries(values).filter(
-                    ([, v]) => v !== undefined && v !== "",
-                  ),
-                ),
-              );
-              if (r.login_required) {
-                setUser(null);
-                setCSRF("");
-              } else setUser({ ...user, username: r.username });
-              setAccountOpen(false);
-            })
-          }
-        >
-          <Form.Item
-            name="current_password"
-            label="当前密码"
-            rules={[{ required: true }]}
-          >
-            <Input.Password autoComplete="current-password" />
-          </Form.Item>
-          <Form.Item name="username" label="新用户名">
-            <Input maxLength={100} />
-          </Form.Item>
-          <Form.Item
-            name="password"
-            label="新密码（至少12个字符，修改后重新登录）"
-            rules={[{ min: 12 }]}
-          >
-            <Input.Password autoComplete="new-password" />
-          </Form.Item>
-          <Button htmlType="submit" type="primary" loading={busy}>
-            保存账号信息
-          </Button>
-        </Form>
       </Modal>
       <Modal
         title="最新训练记录"
@@ -1066,7 +1029,10 @@ export function App() {
             <Form.Item
               key={name}
               name={name}
-              label={label + (["name", "description"].includes(name) ? "" : "（顿号分隔）")}
+              label={
+                label +
+                (["name", "description"].includes(name) ? "" : "（顿号分隔）")
+              }
               rules={name === "name" ? [{ required: true }] : []}
             >
               <Input />

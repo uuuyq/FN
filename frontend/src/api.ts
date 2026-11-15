@@ -66,15 +66,22 @@ async function request(path: string, init: RequestInit): Promise<Response> {
 export function setCSRF(value: string) {
   csrf = value;
 }
+export type StreamMessage = { message_id: string; text: string; ended?: boolean };
+export type ConversationStreamEvent =
+  | { event: "snapshot"; payload: { turn_id: string; sequence: number; messages: StreamMessage[] } }
+  | { event: "message_start" | "text_delta" | "message_end"; payload: { turn_id: string; sequence: number; message_id: string; text: string } };
 export async function conversationStream(
   path: string,
   method: "GET" | "POST",
   body: unknown,
   requestId: string,
   onAccepted: (id: string) => void,
+  onEvent?: (update: ConversationStreamEvent) => void,
+  signal?: AbortSignal,
 ): Promise<any> {
   const response = await request(path, {
     method,
+    signal,
     credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
@@ -91,9 +98,8 @@ export async function conversationStream(
   try {
     while (true) {
       const { value, done } = await reader.read();
-      buffer += decoder
-        .decode(value, { stream: !done })
-        .replaceAll("\r\n", "\n");
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = buffer.replaceAll("\r\n", "\n");
       let boundary: number;
       while ((boundary = buffer.indexOf("\n\n")) >= 0) {
         const block = buffer.slice(0, boundary);
@@ -110,6 +116,8 @@ export async function conversationStream(
           .join("\n");
         if (!data) continue;
         const parsed = JSON.parse(data);
+        if (event === "snapshot" || event === "message_start" || event === "text_delta" || event === "message_end")
+          onEvent?.({ event, payload: parsed });
         if (event === "accepted") onAccepted(parsed.turn_id);
         if (event === "completed" || event === "failed") result = parsed;
       }

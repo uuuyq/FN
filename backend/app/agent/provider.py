@@ -72,24 +72,26 @@ def _parse_calls(message):
 class Provider:
     """Chat Completions-compatible transport, isolated from domain orchestration."""
 
-    async def generate(self, messages, tools, config=None, timeout=65, max_tokens=16000):
+    async def generate(self, messages, tools, config=None, timeout=65, max_tokens=16000, on_delta=None):
         # A single wall-clock budget covers requests, retries and backoff.
         try:
             async with asyncio.timeout(timeout):
-                return await self._generate(messages, tools, config, timeout, max_tokens)
+                return await self._generate(messages, tools, config, timeout, max_tokens, on_delta)
         except TimeoutError:
             raise ProviderError('model_timeout') from None
 
-    async def _generate(self, messages, tools, config, timeout, max_tokens):
+    async def _generate(self, messages, tools, config, timeout, max_tokens, on_delta):
         key, model, base = resolve_config(config)
         payload = {
             'model': model,
+            'stream': True,
             'messages': messages,
             'tools': [{'type': 'function', 'function': schema} for schema in tools],
             'tool_choice': 'auto',
             'parallel_tool_calls': False,
             'max_tokens': max(16, int(max_tokens)),
         }
+        published = False
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             for attempt in range(2):
                 try:
@@ -103,17 +105,60 @@ class Provider:
                             if response.status_code == 400 and ('context' in body or 'token' in body):
                                 raise ProviderError('context_too_large')
                             raise ProviderError('model_http_error')
-                        chunks, size = [], 0
-                        async for chunk in response.aiter_bytes():
-                            size += len(chunk)
-                            if size > 1048576:
-                                raise ProviderError('model_response_too_large')
-                            chunks.append(chunk)
-                    data = json.loads(b''.join(chunks))
+                        if 'text/event-stream' in response.headers.get('content-type', ''):
+                            content, calls, finish, size = '', {}, None, 0
+                            fields = []
+                            ended = False
+                            async for line in response.aiter_lines():
+                                size += len(line.encode('utf-8'))
+                                if size > 1048576:
+                                    raise ProviderError('model_response_too_large')
+                                if line.startswith('data:'):
+                                    fields.append(line[5:].lstrip())
+                                if line or not fields:
+                                    continue
+                                raw = '\n'.join(fields)
+                                fields = []
+                                if raw == '[DONE]':
+                                    ended = True
+                                    break
+                                event = json.loads(raw)
+                                if event.get('error'):
+                                    raise ProviderError('model_http_error')
+                                for choice in event.get('choices', []):
+                                    if choice.get('index', 0) != 0:
+                                        continue
+                                    delta = choice.get('delta') or {}
+                                    text = delta.get('content') or ''
+                                    if not isinstance(text, str):
+                                        raise ProviderError('model_invalid_output')
+                                    content += text
+                                    if text and on_delta:
+                                        published = True
+                                        await on_delta(text)
+                                    for part in delta.get('tool_calls') or []:
+                                        call = calls.setdefault(part['index'], {'id': '', 'function': {'name': '', 'arguments': ''}})
+                                        call['id'] += part.get('id') or ''
+                                        for field in ('name', 'arguments'):
+                                            call['function'][field] += (part.get('function') or {}).get(field) or ''
+                                    if choice.get('finish_reason'):
+                                        finish = choice['finish_reason']
+                            if not ended or finish is None:
+                                raise ProviderError('model_incomplete_output')
+                            data = {'choices': [{'finish_reason': finish, 'message': {
+                                'content': content, 'tool_calls': [calls[k] for k in sorted(calls)]}}]}
+                        else:
+                            chunks, size = [], 0
+                            async for chunk in response.aiter_bytes():
+                                size += len(chunk)
+                                if size > 1048576:
+                                    raise ProviderError('model_response_too_large')
+                                chunks.append(chunk)
+                            data = json.loads(b''.join(chunks))
                     choice = data['choices'][0]
                     message = choice.get('message') or {}
                     if choice.get('finish_reason') == 'tool_calls':
-                        return ModelReply(type='tool_calls', calls=_parse_calls(message))
+                        return ModelReply(type='tool_calls', content=message.get('content') or '', calls=_parse_calls(message))
                     if choice.get('finish_reason') != 'stop':
                         raise ProviderError('model_incomplete_output')
                     content = message.get('content')
@@ -121,7 +166,7 @@ class Provider:
                         raise ProviderError('model_invalid_output')
                     return ModelReply(type='text', content=content)
                 except httpx.TransportError:
-                    if attempt:
+                    if attempt or published:
                         raise ProviderError('model_unavailable') from None
                 except (ValueError, KeyError, IndexError, TypeError) as error:
                     failure = ProviderError('model_invalid_output')

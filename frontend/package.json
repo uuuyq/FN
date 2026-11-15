@@ -8,14 +8,17 @@
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "test": "node --test ../tests/unit/",
-    "test:e2e": "node ../tests/browser/calendar-flow.mjs && node ../tests/browser/agent-resilience.mjs",
+    "test:e2e": "node ../tests/browser/calendar-flow.mjs && node ../tests/browser/records-local-cache.mjs && node ../tests/browser/agent-resilience.mjs",
     "test:e2e:core": "node ../tests/browser/calendar-flow.mjs",
+    "test:e2e:records": "node ../tests/browser/records-local-cache.mjs",
     "test:e2e:resilience": "node ../tests/browser/agent-resilience.mjs"
   },
   "dependencies": {
     "antd": "5.29.1",
     "react": "19.2.0",
-    "react-dom": "19.2.0"
+    "react-dom": "19.2.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@playwright/test": "1.56.1",

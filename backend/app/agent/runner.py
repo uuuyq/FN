@@ -76,10 +76,24 @@ async def run(app, turn_id, user_id, token):
             context.check_budget(messages, schemas)
             config = _user_config(engine, user_id)
             remaining = _remaining(deadline)
+            channel = app.state.turn_streams.get(turn_id)
+            message_id = token + ':' + str(model_calls)
+            if channel:
+                channel.publish('message_start', message_id)
+            streamed = ''
+            async def on_delta(text):
+                nonlocal streamed
+                streamed += text
+                if channel:
+                    channel.publish('text_delta', message_id, text)
             reply = await asyncio.wait_for(app.state.ai_provider.generate(messages, schemas, config,
                 timeout=min(remaining, LIMITS['call_timeout']),
-                max_tokens=context.output_budget(messages, schemas)), timeout=remaining)
+                max_tokens=context.output_budget(messages, schemas), on_delta=on_delta), timeout=remaining)
             _remaining(deadline)
+            if channel:
+                if not streamed and reply.content:
+                    channel.publish('text_delta', message_id, reply.content)
+                channel.publish('message_end', message_id)
             if reply.type == 'text':
                 with write_transaction(engine) as db:
                     _alive(db, turn_id, user_id, token)

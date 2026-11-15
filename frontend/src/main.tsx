@@ -4,7 +4,7 @@ import { App } from "./App";
 import "./style.css";
 
 createRoot(document.getElementById("root")!).render(
-  <ConfigProvider theme={{ token: { colorPrimary: "#39735B", borderRadius: 12 } }}>
+  <ConfigProvider theme={{ token: { colorPrimary: "#202123", borderRadius: 12 } }}>
     <App />
   </ConfigProvider>,
 );

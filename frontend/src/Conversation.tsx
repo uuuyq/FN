@@ -1,14 +1,7 @@
+import { MarkdownReply } from "./MarkdownReply";
 import { getErrorMessage } from "./errors";
 import { useEffect, useRef, useState } from "react";
-import {
-  Alert,
-  Button,
-  Dropdown,
-  Input,
-  Modal,
-  Space,
-  Typography,
-} from "antd";
+import { Alert, Button, Dropdown, Input, Modal, Space, Typography } from "antd";
 import { api, ApiError, conversationStream } from "./api";
 import {
   buildTimeline,
@@ -31,10 +24,12 @@ type Pending = {
 
 // Error codes with dedicated guidance on top of the server's message.
 const turnErrorHints: Record<string, string> = {
-  context_too_large: "对话内容已超过模型上下文上限，请新建会话继续，不建议反复重试。",
+  context_too_large:
+    "对话内容已超过模型上下文上限，请新建会话继续，不建议反复重试。",
   model_timeout: "模型响应超时，可在对话未继续时点击“重试本轮”。",
   agent_loop_limit: "本轮处理达到次数上限，可缩小问题或发送新消息。",
-  model_tool_calling_unsupported: "当前模型连接不支持工具调用，请检查 AI 配置。",
+  model_tool_calling_unsupported:
+    "当前模型连接不支持工具调用，请检查 AI 配置。",
 };
 
 export function Conversation({
@@ -52,6 +47,14 @@ export function Conversation({
   names: Record<string, string>;
   newChatSignal?: number;
 }) {
+  const [drafts, setDrafts] = useState<{ message_id: string; text: string }[]>(
+    [],
+  );
+  const [partialFailed, setPartialFailed] = useState(false);
+  const [sentDraft, setSentDraft] = useState("");
+  const streamController = useRef<AbortController | null>(null);
+  const streamGeneration = useRef(0);
+  useEffect(() => () => streamController.current?.abort(), []);
   const [deleting, setDeleting] = useState<{
     id: string;
     title: string;
@@ -74,10 +77,12 @@ export function Conversation({
   const [online, setOnline] = useState<any>(null);
   // Button request in flight; one X-Request-ID per action and kind is reused
   // across retries so a repeated click never duplicates the write.
-  const [working, setWorking] = useState<
-    { actionId: string; kind: "confirm" | "cancel" } | null
-  >(null);
+  const [working, setWorking] = useState<{
+    actionId: string;
+    kind: "confirm" | "cancel";
+  } | null>(null);
   const actionRequestIds = useRef<Map<string, string>>(new Map());
+  const loadRevision = useRef(0);
   const idRef = useRef<string | null>(null);
   const pending = useRef<Pending | null>(null);
   const alive = useRef(true);
@@ -85,6 +90,44 @@ export function Conversation({
   const nearBottom = useRef(true);
   const end = useRef<HTMLDivElement>(null);
   const [newReply, setNewReply] = useState(false);
+  const controls = useRef<HTMLDivElement>(null);
+  const scrollToEnd = () => {
+    nearBottom.current = true;
+    setNewReply(false);
+    requestAnimationFrame(() =>
+      end.current?.scrollIntoView({
+        block: "end",
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "instant"
+          : "smooth",
+      }),
+    );
+  };
+  useEffect(() => {
+    const element = controls.current;
+    if (!element) return;
+    const resize = () =>
+      document.documentElement.style.setProperty(
+        "--composer-height",
+        `${element.getBoundingClientRect().height}px`,
+      );
+    const viewport = () => {
+      const view = window.visualViewport;
+      element.style.bottom = `${view ? Math.max(0, window.innerHeight - view.height - view.offsetTop) : 0}px`;
+    };
+    const observer = new ResizeObserver(resize);
+    observer.observe(element);
+    window.visualViewport?.addEventListener("resize", viewport);
+    window.visualViewport?.addEventListener("scroll", viewport);
+    resize();
+    viewport();
+    return () => {
+      observer.disconnect();
+      window.visualViewport?.removeEventListener("resize", viewport);
+      window.visualViewport?.removeEventListener("scroll", viewport);
+      document.documentElement.style.removeProperty("--composer-height");
+    };
+  }, []);
   const setId = (value: string | null) => {
     idRef.current = value;
     setIdState(value);
@@ -99,7 +142,7 @@ export function Conversation({
     return () => window.removeEventListener("scroll", check);
   }, []);
   useEffect(() => {
-    if (!data?.messages.length) return;
+    if (!data?.messages.length && !drafts.length && !sentDraft) return;
     if (nearBottom.current)
       end.current?.scrollIntoView({
         block: "end",
@@ -108,10 +151,14 @@ export function Conversation({
           : "smooth",
       });
     else setNewReply(true);
-  }, [data?.messages.length]);
+  }, [data?.messages.length, drafts, sentDraft]);
   const storage = "fitplan-conversation-" + owner;
   const turnKey = "fitplan-turn-" + owner;
   const resetCurrent = () => {
+    streamController.current?.abort();
+    streamGeneration.current++;
+    setDrafts([]);
+    setSentDraft("");
     setId(null);
     setData(null);
     setWorking(null);
@@ -125,10 +172,12 @@ export function Conversation({
   const startNewChat = () => {
     localStorage.removeItem(storage);
     resetCurrent();
+    scrollToEnd();
   };
   const load = async (target?: string | null): Promise<Snapshot | null> => {
     const key = target ?? idRef.current;
     if (!key) return null;
+    const revision = ++loadRevision.current;
     let value: Snapshot;
     try {
       value = await api<Snapshot>("/conversations/" + key);
@@ -151,12 +200,21 @@ export function Conversation({
       throw e;
     }
     // A response for a conversation the user already left must not win.
-    if (alive.current && idRef.current === key) setData(value);
+    if (
+      alive.current &&
+      idRef.current === key &&
+      revision === loadRevision.current
+    )
+      setData(value);
     return idRef.current === key ? value : null;
   };
   useEffect(() => {
     alive.current = true;
     // A page refresh starts with a blank conversation. History is opened explicitly.
+    streamController.current?.abort();
+    streamGeneration.current++;
+    setDrafts([]);
+    setSentDraft("");
     setId(null);
     setData(null);
     setWorking(null);
@@ -205,6 +263,24 @@ export function Conversation({
     method: "GET" | "POST",
     target: string,
   ) => {
+    streamController.current?.abort();
+    const controller = new AbortController();
+    streamController.current = controller;
+    const generation = ++streamGeneration.current;
+    let sequence = -1;
+    let currentDrafts: { message_id: string; text: string }[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const valid = () =>
+      alive.current &&
+      generation === streamGeneration.current &&
+      idRef.current === target;
+    const flush = () => {
+      timer = undefined;
+      if (valid()) setDrafts(currentDrafts.map((item) => ({ ...item })));
+    };
+    setPartialFailed(false);
+    setDrafts([]);
+    setSentDraft(p.sentText || "");
     setBusy(true);
     setWorking(null);
     onLock(p.mode === "edit");
@@ -217,11 +293,49 @@ export function Conversation({
         p.requestId,
         (turnId) => {
           p.turnId = turnId;
-          localStorage.setItem(turnKey, turnId);
+          if (valid()) localStorage.setItem(turnKey, turnId);
         },
+        ({ event, payload }) => {
+          if (!valid() || payload.turn_id !== p.turnId) return;
+          if (event === "snapshot") {
+            setSentDraft("");
+            void load(target).catch(() => {});
+            sequence = payload.sequence;
+            currentDrafts = payload.messages;
+          } else if (
+            ["message_start", "text_delta", "message_end"].includes(event)
+          ) {
+            if (payload.sequence <= sequence) return;
+            sequence = payload.sequence;
+            if (event === "message_start")
+              currentDrafts.push({ message_id: payload.message_id, text: "" });
+            if (event === "text_delta") {
+              const item = currentDrafts.find(
+                (item) => item.message_id === payload.message_id,
+              );
+              if (item) item.text += payload.text;
+            }
+          } else return;
+          if (!timer) timer = setTimeout(flush, 50);
+        },
+        controller.signal,
       );
-      if (!alive.current) return;
+      if (!valid()) return;
+      if (timer) clearTimeout(timer);
+      flush();
       const snapshot = await load(target);
+      if (!valid()) return;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      setSentDraft("");
+      const durableText = snapshot?.messages
+        .filter((m) => m.turn_id === result.id && m.role === "assistant")
+        .map((m) => m.content || "");
+      currentDrafts = currentDrafts.filter(
+        (item) => item.text && !durableText?.includes(item.text),
+      );
+      setDrafts(result.status === "succeeded" ? [] : currentDrafts);
+      setPartialFailed(result.status !== "succeeded");
       // completed only means the turn ended; confirmation_required waits for
       // the card button, and nothing is written during the turn itself.
       if (result.status !== "succeeded") {
@@ -239,6 +353,8 @@ export function Conversation({
       localStorage.removeItem(turnKey);
       if (!snapshot && idRef.current === target) throw Error("会话恢复失败");
     } catch (e) {
+      if (!valid()) return;
+      flush();
       if (alive.current)
         setError(getErrorMessage(e) + "。请恢复轮次；不会自动重新调用模型。");
       if (e instanceof ApiError && e.status >= 400 && e.status < 500)
@@ -246,13 +362,15 @@ export function Conversation({
       // If accepted was received, keep the input locked until recovery establishes a terminal state.
       if (p.turnId) return;
     } finally {
-      if (alive.current) {
+      if (timer) clearTimeout(timer);
+      if (valid()) {
         setBusy(false);
         onLock(!!pending.current && pending.current.mode === "edit");
       }
     }
   };
   const send = async () => {
+    scrollToEnd();
     onSend?.();
     setError("");
     setBusy(true);
@@ -344,15 +462,17 @@ export function Conversation({
       if (typeof continuationId === "string") {
         const p: Pending = {
           path: `/turns/${continuationId}/events`,
-          body: {}, requestId: crypto.randomUUID(), mode: "edit", sentText: "",
+          body: {},
+          requestId: crypto.randomUUID(),
+          mode: "edit",
+          sentText: "",
           turnId: continuationId,
         };
         pending.current = p;
         await observe(p, "GET", conversationId);
       }
     } catch (e) {
-      if (idRef.current === conversationId)
-        setError(getErrorMessage(e));
+      if (idRef.current === conversationId) setError(getErrorMessage(e));
       // A stale card (409) or vanished action (404): the reloaded snapshot
       // disables the outdated buttons with server state.
       await safe(async () => {
@@ -398,7 +518,9 @@ export function Conversation({
                 names={names}
                 working={working}
                 locked={busy || !!pending.current}
-                onConfirm={(action) => void safe(() => decide(action, "confirm"))}
+                onConfirm={(action) =>
+                  void safe(() => decide(action, "confirm"))
+                }
                 onCancel={(action) => void safe(() => decide(action, "cancel"))}
               />
             );
@@ -413,19 +535,48 @@ export function Conversation({
                 <Typography.Text type="secondary">
                   {message.content}
                 </Typography.Text>
+              ) : message.role === "assistant" ? (
+                <MarkdownReply content={message.content || ""} />
               ) : (
-                <Typography.Paragraph style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}>
+                <Typography.Paragraph
+                  style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
+                >
                   {message.content}
                 </Typography.Paragraph>
               )}
             </div>
           );
         })}
+        {sentDraft && <div className="message-bubble user">{sentDraft}</div>}
+        {drafts
+          .filter(
+            (item) =>
+              item.text &&
+              !data?.messages.some(
+                (m) =>
+                  m.turn_id === pending.current?.turnId &&
+                  m.role === "assistant" &&
+                  m.content === item.text,
+              ),
+          )
+          .map((item) => (
+            <div
+              key={item.message_id}
+              className="message-bubble assistant"
+              style={{ whiteSpace: "pre-wrap", marginBottom: 12 }}
+            >
+              <MarkdownReply content={item.text} />
+              {partialFailed && (
+                <Typography.Text type="warning">（未完成）</Typography.Text>
+              )}
+            </div>
+          ))}
       </div>
       {retryable && (
         <Space>
           <Typography.Text type="warning">
-            未完成轮次：{getErrorMessage(new Error(retryable.error_message || ""))}
+            未完成轮次：
+            {getErrorMessage(new Error(retryable.error_message || ""))}
           </Typography.Text>
           <Button
             disabled={requestInFlight}
@@ -446,21 +597,25 @@ export function Conversation({
           </Button>
         </Space>
       )}
-      <div ref={end} />
+      <div
+        ref={end}
+        style={{ scrollMarginBottom: "calc(var(--composer-height) + 16px)" }}
+      />
       {newReply && (
         <Button
           onClick={() => {
-            end.current?.scrollIntoView({ behavior: "smooth" });
+            scrollToEnd();
             setNewReply(false);
           }}
         >
           有新回复 ↓
         </Button>
       )}
-      <div className="conversation-controls">
+      <div className="conversation-controls" ref={controls}>
         <div className="composer-row">
           <Button
             type="text"
+            title="历史对话"
             className="history-toggle"
             aria-label="展开历史对话"
             aria-expanded={historyOpen}
@@ -490,6 +645,7 @@ export function Conversation({
 
           <Button
             type="text"
+            title="新建对话"
             className="new-chat"
             aria-label="新对话"
             disabled={requestInFlight}
@@ -563,7 +719,7 @@ export function Conversation({
           inert={!historyOpen}
         >
           <div className="history-reveal-inner">
-            {historyMounted && (
+            {(historyMounted || historyOpen) && (
               <section
                 className="conversation-history"
                 aria-label="历史对话面板"
@@ -592,6 +748,7 @@ export function Conversation({
                             localStorage.setItem(storage, item.id);
                             const snapshot = await load(item.id);
                             setHistoryOpen(false);
+                            scrollToEnd();
                             onSend?.();
                             const active = snapshot?.turns.find(
                               (t) => t.status === "running",

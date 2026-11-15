@@ -24,71 +24,37 @@ export function useWorkoutEditor(
     pending: null,
   }));
   const [active, setActive] = useState(false);
-  const [restoring, setRestoring] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<Error | null>(null);
   const current = useRef(buffer);
   const currentOwner = useRef(owner);
   const running = useRef<Promise<Workout> | null>(null);
-  const storageKey = (id: string) => "fitplan-editor-v2-" + id;
-  const persist = (value: Buffer | null) => {
-    if (!currentOwner.current) return;
-    try {
-      if (value)
-        localStorage.setItem(
-          storageKey(currentOwner.current),
-          JSON.stringify(value),
-        );
-      else localStorage.removeItem(storageKey(currentOwner.current));
-    } catch {
-      throw Error("浏览器缓存不可用，请保持窗口打开并保存记录");
-    }
-  };
   const update = (value: Buffer, keep: boolean) => {
     current.current = value;
     setBuffer(value);
     setActive(keep);
-    try {
-      persist(keep ? value : null);
-      setSaveError(null);
-    } catch (error) {
-      setSaveError(error as Error);
-    }
+    setSaveError(null);
   };
   useEffect(() => {
     currentOwner.current = owner;
-    const empty = { content: initial(), original: null, pending: null };
-    current.current = empty;
-    setBuffer(empty);
-    setActive(false);
-    setSaveError(null);
-    setRestoring(false);
-    if (!owner) return;
-    let cancelled = false;
-    setRestoring(true);
-    (async () => {
+    update({ content: initial(), original: null, pending: null }, false);
+    if (owner) {
       try {
-        localStorage.removeItem("fitplan-editor-" + owner);
-        localStorage.removeItem("fitplan-draft-" + owner);
-        const cached = localStorage.getItem(storageKey(owner));
-        if (cached) {
-          const value: Buffer = JSON.parse(cached);
-          if (!value.content || !Array.isArray(value.content.exercises))
-            throw Error("本地编辑内容无法读取");
-          if (!cancelled) update(value, true);
-          return;
-        }
-      } catch (error) {
-        if (!cancelled) setSaveError(error as Error);
-      } finally {
-        if (!cancelled) setRestoring(false);
+        for (const prefix of [
+          "fitplan-editor-",
+          "fitplan-draft-",
+          "fitplan-editor-v2-",
+        ])
+          localStorage.removeItem(prefix + owner);
+      } catch {
+        /* Editing works without browser storage. */
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    }
   }, [owner]);
-
+  const discard = () => {
+    if (!running.current)
+      update({ content: initial(), original: null, pending: null }, false);
+  };
   const replace = (original: Workout | null, content?: Content) => {
     if (running.current) throw Error("请等待保存完成");
     if (current.current.pending)
@@ -156,7 +122,7 @@ export function useWorkoutEditor(
   };
   useEffect(() => {
     const leave = (event: BeforeUnloadEvent) => {
-      if (running.current || (active && saveError)) {
+      if (running.current) {
         event.preventDefault();
         event.returnValue = "";
       }
@@ -171,8 +137,8 @@ export function useWorkoutEditor(
     active,
     setContent,
     replace,
+    discard,
     save,
-    restoring,
     saving,
     saveError,
   };
