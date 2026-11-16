@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Input, message, Spin, Typography } from "antd";
+import { Alert, Button, Input, Select, message, Spin, Typography } from "antd";
 import { api } from "./api";
 import { getErrorMessage } from "./errors";
 
@@ -8,85 +8,12 @@ type Equipment = {
   name: string;
   equipment_id?: string | null;
   version: number;
+  category: string;
 };
 type EquipmentList = { items: Equipment[]; loading: boolean; error: string };
 const initialList: EquipmentList = { items: [], loading: true, error: "" };
 
-const categories = [
-  {
-    name: "自由重量",
-    ids: ["barbell", "dumbbell", "kettlebell", "ez-bar", "trap-bar", "plates"],
-  },
-  {
-    name: "固定器械",
-    ids: [
-      "smith",
-      "cable",
-      "lat-pulldown",
-      "seated-row",
-      "chest-press",
-      "pec-deck",
-      "shoulder-press",
-      "leg-press",
-      "hack-squat",
-      "leg-extension",
-      "leg-curl",
-      "hip-thrust",
-      "hip-abduction",
-      "hip-adduction",
-      "calf-raise",
-      "assisted-pullup",
-    ],
-  },
-  {
-    name: "训练架与凳",
-    ids: [
-      "bench",
-      "pullup",
-      "rack",
-      "dip-bars",
-      "roman-chair",
-      "preacher-bench",
-    ],
-  },
-  {
-    name: "有氧器械",
-    ids: [
-      "treadmill",
-      "bike",
-      "air-bike",
-      "rower",
-      "elliptical",
-      "stair-climber",
-      "ski-erg",
-    ],
-  },
-  {
-    name: "功能训练",
-    ids: [
-      "band",
-      "mini-band",
-      "trx",
-      "gym-rings",
-      "stability-ball",
-      "medicine-ball",
-      "slam-ball",
-      "bosu",
-      "ab-wheel",
-      "box",
-      "step",
-      "rope",
-      "battle-rope",
-      "sled",
-      "sandbag",
-    ],
-  },
-  { name: "辅助与恢复", ids: ["mat", "foam-roller"] },
-  { name: "其他", ids: [] },
-];
-const categoryFor = (id: string | null | undefined) =>
-  categories.find((category) => category.ids.includes(id || ""))?.name ||
-  "其他";
+const categories = ["自由重量", "固定器械", "训练架与凳", "有氧器械", "功能训练", "辅助与恢复", "其他"];
 
 export function EquipmentCatalog({
   active,
@@ -98,6 +25,8 @@ export function EquipmentCatalog({
   const [mine, setMine] = useState(initialList);
   const [presets, setPresets] = useState(initialList);
   const [names, setNames] = useState<Record<string, string>>({});
+  const [category, setCategory] = useState("其他");
+  const [editedCategories, setEditedCategories] = useState<Record<string, string>>({});
   const [name, setName] = useState("");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -170,23 +99,23 @@ export function EquipmentCatalog({
     ...presets.items.map((item) => ({
       item,
       user: mine.items.find((user) => user.equipment_id === item.id),
-      category: categoryFor(item.id),
+      category: mine.items.find(user => user.equipment_id === item.id)?.category ?? item.category,
     })),
     ...mine.items
       .filter((item) => !item.equipment_id || !publicIds.has(item.equipment_id))
       .map((item) => ({
         item,
         user: item,
-        category: categoryFor(item.equipment_id),
+        category: item.category,
       })),
   ];
   const search = query.trim().toLocaleLowerCase();
   const groups = categories
     .map((category) => ({
-      name: category.name,
+      name: category,
       items: entries.filter(
         (entry) =>
-          entry.category === category.name &&
+          entry.category === category &&
           [entry.item.name, entry.user?.name].some((name) =>
             name?.toLocaleLowerCase().includes(search),
           ),
@@ -209,7 +138,7 @@ export function EquipmentCatalog({
           event.preventDefault();
           if (!name.trim()) return;
           void mutate(async () => {
-            await api("/user-equipment", "POST", { name: name.trim() });
+            await api("/user-equipment", "POST", { name: name.trim(), category });
             setName("");
           }, "器械已添加");
         }}
@@ -218,10 +147,11 @@ export function EquipmentCatalog({
           aria-label="自定义器械名称"
           placeholder="自定义器械名称"
           value={name}
-          maxLength={200}
+          maxLength={100}
           disabled={busy}
           onChange={(event) => setName(event.target.value)}
         />
+        <Select aria-label="器械分类" value={category} disabled={busy} options={categories.map(value => ({ value, label: value }))} onChange={setCategory} />
         <Button htmlType="submit" disabled={busy || !name.trim()}>
           新增器械
         </Button>
@@ -246,6 +176,7 @@ export function EquipmentCatalog({
                   <Input
                     aria-label="器械名称"
                     value={edited}
+                    maxLength={100}
                     disabled={busy}
                     onChange={(event) =>
                       setNames((old) => ({
@@ -254,8 +185,9 @@ export function EquipmentCatalog({
                       }))
                     }
                   />
+                  <Select aria-label="编辑器械分类" value={editedCategories[item.id] ?? item.category} disabled={busy} options={categories.map(value => ({ value, label: value }))} onChange={value => setEditedCategories(old => ({ ...old, [item.id]: value }))} />
                   <Button
-                    disabled={busy || !edited.trim() || edited === item.name}
+                    disabled={busy || !edited.trim() || (edited === item.name && (editedCategories[item.id] ?? item.category) === item.category)}
                     onClick={() =>
                       void mutate(async () => {
                         const updated = await api<Equipment>(
@@ -263,6 +195,7 @@ export function EquipmentCatalog({
                           "PUT",
                           {
                             name: edited.trim(),
+                            category: editedCategories[item.id] ?? item.category,
                             equipment_id: item.equipment_id,
                             version: item.version,
                           },

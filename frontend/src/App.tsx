@@ -121,7 +121,7 @@ export function App() {
     setCatalog(rows);
   };
   const [revision, setRevision] = useState(0);
-  const [settingsSection, setSettingsSection] = useState("profile");
+  const [settingsSection, setSettingsSection] = useState("general");
   const bumpRevision = () => setRevision((v) => v + 1);
   const meaningful = content.exercises.length > 0;
   const closeRecord = async () => {
@@ -644,19 +644,16 @@ export function App() {
       onFinish={(v) =>
         void runSettings(async () => {
           setProfile(
-            await api("/profile", "PUT", { ...v, version: profile.version }),
+            await api("/profile", "PUT", { ...profile, ...v, version: profile.version }),
           );
         }, "个人条件已保存")
       }
     >
       {[
-        ["goal", "训练目标"],
-        ["preferences", "偏好"],
-        ["restrictions", "限制"],
-        ["timezone", "时区"],
+        ["preferences", "个人偏好"],
       ].map(([name, label]) => (
         <Form.Item key={name} name={name} label={label}>
-          <Input />
+          <Input.TextArea autoSize={{ minRows: 2, maxRows: 8 }} maxLength={10000} />
         </Form.Item>
       ))}
       <Form.Item name="days_per_week" label="每周训练天数">
@@ -664,6 +661,12 @@ export function App() {
       </Form.Item>
       <Form.Item name="minutes_per_session" label="单次时间（分钟）">
         <InputNumber min={1} max={1440} />
+      </Form.Item>
+      <Form.Item name="training_principles" label="训练指导原则">
+        <Input.TextArea autoSize={{ minRows: 3, maxRows: 12 }} maxLength={16000} placeholder="留空使用系统默认训练指导原则" />
+      </Form.Item>
+      <Form.Item name="history_workout_count" label="参考训练次数">
+        <InputNumber min={1} max={50} />
       </Form.Item>
       <Button htmlType="submit" loading={settingsBusy}>
         保存个人条件
@@ -687,6 +690,7 @@ export function App() {
         initialValues={{
           base_url: aiConfig.base_url,
           model: aiConfig.model,
+          reasoning_effort: aiConfig.reasoning_effort ?? "high",
         }}
         onFinish={(v) =>
           void runSettings(async () => {
@@ -732,6 +736,9 @@ export function App() {
         >
           <Input placeholder="deepseek-chat" />
         </Form.Item>
+        <Form.Item name="reasoning_effort" label="思考强度">
+          <Select options={[{ value: "none", label: "关闭" }, { value: "low", label: "低" }, { value: "high", label: "高" }, { value: "max", label: "最大" }]} />
+        </Form.Item>
         <Form.Item name="api_key" label="API Key">
           <Input.Password
             placeholder="留空沿用已保存的 Key"
@@ -764,6 +771,7 @@ export function App() {
     <div className="settings-layout">
       <nav aria-label="设置类别">
         {[
+          ["general", "通用"],
           ["profile", "个人条件"],
           ["ai", "AI 模型"],
           ["security", "安全"],
@@ -799,10 +807,19 @@ export function App() {
             container.scrollTop + container.clientHeight >=
               container.scrollHeight - 2
               ? "security"
-              : current?.id.replace("settings-", "") || "profile",
+              : current?.id.replace("settings-", "") || "general",
           );
         }}
       >
+        <section id="settings-general">
+          <Form layout="vertical" key={profile.version} initialValues={profile}
+            onFinish={(v) => void runSettings(async () => {
+              setProfile(await api("/profile", "PUT", { ...profile, ...v }));
+            }, "通用设置已保存")}>
+            <Form.Item name="timezone" label="时区"><Input /></Form.Item>
+            <Button htmlType="submit" loading={settingsBusy}>保存通用设置</Button>
+          </Form>
+        </section>
         <section id="settings-profile">{profileForm}</section>
         <section id="settings-ai">{aiSettings}</section>
         <section id="settings-security">
@@ -997,6 +1014,8 @@ export function App() {
       </Modal>
       <Modal
         title={custom ? "编辑自定义动作" : "创建自定义动作"}
+        okText="保存"
+        cancelText="取消"
         open={custom !== false}
         onCancel={() => setCustom(false)}
         confirmLoading={busy}

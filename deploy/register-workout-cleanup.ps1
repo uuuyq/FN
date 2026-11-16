@@ -12,15 +12,15 @@ if (!$Python) {
 $Python = (Resolve-Path -LiteralPath $Python).Path
 $taskName = 'FitPlan-WorkoutCleanup'
 $backend = Join-Path $projectRoot 'backend'
-$action = New-ScheduledTaskAction -Execute $Python -Argument '-m scripts.cleanup_workouts' -WorkingDirectory $backend
-$trigger = New-ScheduledTaskTrigger -Daily -At $At
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$action = New-ScheduledTaskAction -ErrorAction Stop -Execute $Python -Argument '-m scripts.cleanup_workouts' -WorkingDirectory $backend
+$trigger = New-ScheduledTaskTrigger -ErrorAction Stop -Daily -At $At
+$settings = New-ScheduledTaskSettingsSet -ErrorAction Stop -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -ErrorAction Stop -UserId $user -LogonType Interactive -RunLevel Limited
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existing -and ($existing.Actions.WorkingDirectory -ne $backend)) {
     throw 'An unrelated task uses this name; refusing to overwrite it'
 }
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Purge FitPlan workouts closed for at least seven days. Logs: runtime/workout-cleanup.log' -Force | Out-Null
+Register-ScheduledTask -ErrorAction Stop -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Purge FitPlan workouts deleted for at least seven days. Logs: runtime/workout-cleanup.log' -Force | Out-Null
 Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State
 Get-ScheduledTaskInfo -TaskName $taskName | Select-Object NextRunTime, LastTaskResult

@@ -31,11 +31,11 @@ class Register(Login):
 
 
 class Profile(Version):
-    goal: str = Field(default='', max_length=1000)
     days_per_week: int | None = Field(default=None, ge=1, le=7)
     minutes_per_session: int | None = Field(default=None, ge=1, le=1440)
-    preferences: str = Field(default='', max_length=4000)
-    restrictions: str = Field(default='', max_length=4000)
+    preferences: str = Field(default='', max_length=10000)
+    training_principles: str = Field(default='', max_length=16000)
+    history_workout_count: int = Field(default=7, ge=1, le=50)
     timezone: str = 'Asia/Shanghai'
 
     @field_validator('timezone')
@@ -49,6 +49,7 @@ class Profile(Version):
 
 
 class AiConfigTest(Schema):
+    reasoning_effort: Literal['none', 'low', 'high', 'max'] = 'high'
     base_url: AnyHttpUrl
     model: str = Field(min_length=1, max_length=100)
     api_key: Annotated[str, StringConstraints(strip_whitespace=False)] | None = Field(default=None, min_length=1, max_length=1024)
@@ -84,6 +85,7 @@ class PreferenceBatch(Schema):
 
 
 class EquipmentInput(Schema):
+    category: Literal['自由重量', '固定器械', '训练架与凳', '有氧器械', '功能训练', '辅助与恢复', '其他'] | None = None
     name: Name
     equipment_id: str | None = None
 

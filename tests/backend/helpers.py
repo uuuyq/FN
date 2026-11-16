@@ -13,20 +13,18 @@ def write(client, path, body, method='POST', request_id=None, status=200):
 
 
 def content():
-    return {'actual_date': '2026-01-02', 'exercises': [{'exercise_id': 'bench-press', 'weight_mode': 'external', 'weight_scope': 'total', 'sets': [{'weight_kg': '60.125', 'reps': 8}, {'weight_kg': '65', 'reps': 6}, {'kind': 'warmup', 'weight_kg': None, 'reps': None}]}]}
+    return {'actual_date': '2026-01-02', 'exercises': [{'exercise_id': 'bench-press', 'sets': [{'weight_kg': '60.125', 'reps': 8}, {'weight_kg': '65', 'reps': 6}, {'kind': 'warmup', 'weight_kg': None, 'reps': None}]}]}
 
 
 def make_workout(client):
-    draft = write(client, '/workout-drafts', {'content': content()})
-    workout = write(client, '/workout-drafts/' + draft['id'] + '/confirm', {'version': draft['version']})
-    return draft, workout
+    return None, write(client, '/workouts', {'content': content()})
 
 
 class FakeProvider:
     def __init__(self, fn):
         self.fn, self.calls = fn, []
 
-    async def generate(self, messages, tools, config=None, timeout=None, max_tokens=16000):
+    async def generate(self, messages, tools, config=None, timeout=None, max_tokens=16000, on_delta=None):
         self.calls.append({'messages': messages, 'tools': tools, 'max_tokens': max_tokens})
         value = self.fn(messages, tools)
         if asyncio.iscoroutine(value):
@@ -51,10 +49,8 @@ def setup(a, fn):
     return conversation['id'], provider
 
 
-def send(a, cid, text='记录', request_id=None, mode='edit', selected_date=None):
+def send(a, cid, text='记录', request_id=None, mode='edit'):
     body = {'text': text, 'mode': mode}
-    if selected_date:
-        body['selected_date'] = selected_date
     response = a.post(f'/api/conversations/{cid}/messages', json=body, headers={'X-Request-ID': request_id or str(uuid4())})
     assert response.status_code == 200, response.text
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]

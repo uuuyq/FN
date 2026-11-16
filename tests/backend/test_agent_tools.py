@@ -19,21 +19,21 @@ def count(engine, model):
 def last_event(engine, cid):
     with Session(engine) as db:
         from app.models import Message
-        rows = db.scalars(select(Message).where(Message.conversation_id == cid, Message.role == 'event').order_by(Message.sequence)).all()
+        rows = db.scalars(select(Message).where(Message.conversation_id == cid, Message.role == 'event', Message.event_kind != 'action_result').order_by(Message.sequence)).all()
         return rows[-1] if rows else None
 
 
 def test_registry_requires_kind_and_filters_read_only():
     registry = build_registry()
-    assert {tool.name for tool in registry.tools()} == {'list_workouts', 'get_workout', 'save_workout',
-        'delete_workout', 'update_profile', 'update_preferences', 'add_equipment'}
+    assert {tool.name for tool in registry.tools()} == {'get_profile', 'get_training_plan_context', 'list_workouts', 'get_workout', 'save_workout',
+        'delete_workout', 'update_profile', 'update_preferences', 'add_equipment', 'add_exercise', 'list_operations', 'undo_operation'}
     assert all(tool.kind == 'read' for tool in registry.tools(read_only=True))
-    assert {tool.name for tool in registry.tools(read_only=True)} == {'list_workouts', 'get_workout'}
+    assert {tool.name for tool in registry.tools(read_only=True)} == {'get_profile', 'get_training_plan_context', 'list_workouts', 'get_workout', 'list_operations'}
     schemas = registry.schemas()
     assert all(schema['name'] and schema['description'] and schema['parameters'].get('type') == 'object' for schema in schemas)
     save = registry.get('save_workout')
     with pytest.raises(ValueError):
-        Tool(name='x', description='x', model=save.model, kind='admin', execute=save.execute)
+        Tool(name='x', description='x', model=save.model, kind='admin', execution='direct', execute=save.execute)
 
 
 def test_save_workout_schema_hides_internal_fields_and_documents_inputs():
@@ -50,14 +50,14 @@ def test_save_workout_schema_hides_internal_fields_and_documents_inputs():
     exercise_props = resolve(content_props['exercises']['items'])['properties']
     assert 'confirm_create' not in exercise_props
     assert '公斤重量' in resolve(exercise_props['sets']['items'])['properties']['weight_kg']['description']
-    assert '确认后创建自定义动作' in exercise_props['custom_name']['description']
+    assert '新建个人动作的名称' in exercise_props['custom_name']['description']
     assert 'YYYY-MM-DD' in content_props['actual_date']['description']
-    assert 'unknown' in exercise_props['weight_mode']['description']
+    assert 'weight_mode' not in exercise_props and 'weight_scope' not in exercise_props
 
 
 def test_write_tool_proposes_card_without_touching_business_data(env):
     engine, (a, _) = env
-    cid, provider = setup(a, lambda messages, tools: call('t1', 'save_workout', content=content()))
+    cid, provider = setup(a, lambda messages, tools: reply('已收到执行结果') if messages[-1]['role'] != 'user' and any(m.get('role') == 'tool' and '"status"' in m.get('content', '') for m in messages) else call('t1', 'save_workout', content=content()))
     result = send(a, cid, '记录卧推')
     assert result['status'] == 'succeeded'
     assert result['result']['type'] == 'confirmation_required'
@@ -75,16 +75,16 @@ def test_write_tool_proposes_card_without_touching_business_data(env):
 
 def test_confirm_executes_once_replays_idempotent_and_records_event(env):
     engine, (a, _) = env
-    cid, _ = setup(a, lambda messages, tools: call('t1', 'save_workout', content=content()))
+    cid, _ = setup(a, lambda messages, tools: reply('已收到执行结果') if messages[-1]['role'] != 'user' and any(m.get('role') == 'tool' and '"status"' in m.get('content', '') for m in messages) else call('t1', 'save_workout', content=content()))
     result = send(a, cid, '记录卧推')
     request_id = str(uuid4())
     confirmed = write(a, '/conversation-actions/' + result['result']['action_id'] + '/confirm', {'version': 1}, request_id=request_id)
     assert confirmed['status'] == 'confirmed'
     assert confirmed['result']['workout_id']
-    assert a.get('/api/workouts').json()['total'] == 1
+    assert a.get('/api/workouts?on=2026-01-02').json()['total'] == 1
     replay = write(a, '/conversation-actions/' + result['result']['action_id'] + '/confirm', {'version': 1}, request_id=request_id)
     assert replay['status'] == 'confirmed'
-    assert a.get('/api/workouts').json()['total'] == 1
+    assert a.get('/api/workouts?on=2026-01-02').json()['total'] == 1
     event = last_event(engine, cid)
     assert event.event_kind == 'action_confirmed'
     assert '已确认执行' in event.content
@@ -92,7 +92,7 @@ def test_confirm_executes_once_replays_idempotent_and_records_event(env):
 
 def test_cancel_keeps_business_data_and_is_final(env):
     engine, (a, _) = env
-    cid, _ = setup(a, lambda messages, tools: call('t1', 'save_workout', content=content()))
+    cid, _ = setup(a, lambda messages, tools: reply('已收到执行结果') if messages[-1]['role'] != 'user' and any(m.get('role') == 'tool' and '"status"' in m.get('content', '') for m in messages) else call('t1', 'save_workout', content=content()))
     result = send(a, cid, '记录卧推')
     cancelled = write(a, '/conversation-actions/' + result['result']['action_id'] + '/cancel', {'version': 1})
     assert cancelled['status'] == 'cancelled' and cancelled['allowed_operations'] == []
@@ -103,7 +103,7 @@ def test_cancel_keeps_business_data_and_is_final(env):
 
 def test_confirm_cross_user_is_404_and_wrong_version_is_409(env):
     _, (a, b) = env
-    cid, _ = setup(a, lambda messages, tools: call('t1', 'save_workout', content=content()))
+    cid, _ = setup(a, lambda messages, tools: reply('已收到执行结果') if messages[-1]['role'] != 'user' and any(m.get('role') == 'tool' and '"status"' in m.get('content', '') for m in messages) else call('t1', 'save_workout', content=content()))
     result = send(a, cid, '记录卧推')
     action_id = result['result']['action_id']
     write(b, '/conversation-actions/' + action_id + '/confirm', {'version': 1}, status=404)
@@ -114,7 +114,7 @@ def test_confirm_cross_user_is_404_and_wrong_version_is_409(env):
 
 def test_read_only_mode_rejects_write_tool(env):
     engine, (a, _) = env
-    cid, _ = setup(a, lambda messages, tools: call('t1', 'save_workout', content=content()))
+    cid, _ = setup(a, lambda messages, tools: reply('已收到执行结果') if messages[-1]['role'] != 'user' and any(m.get('role') == 'tool' and '"status"' in m.get('content', '') for m in messages) else call('t1', 'save_workout', content=content()))
     result = send(a, cid, '记录卧推', mode='read')
     assert result['status'] == 'failed'
     assert result['error'] == 'read_only_turn'
@@ -143,7 +143,7 @@ def test_update_flow_conflict_marks_action_conflict_without_overwrite(env):
 
 def test_confirm_crash_rolls_back_without_partial_data(env, monkeypatch):
     engine, (a, _) = env
-    cid, _ = setup(a, lambda messages, tools: call('t1', 'save_workout', content=content()))
+    cid, _ = setup(a, lambda messages, tools: reply('已收到执行结果') if messages[-1]['role'] != 'user' and any(m.get('role') == 'tool' and '"status"' in m.get('content', '') for m in messages) else call('t1', 'save_workout', content=content()))
     result = send(a, cid, '记录卧推')
     from app.agent.tools import workouts as workout_tools
     original = workout_tools.save_workout
@@ -159,7 +159,7 @@ def test_confirm_crash_rolls_back_without_partial_data(env, monkeypatch):
     # A new proposal can still be confirmed after the failure.
     result2 = send(a, cid, '再记录一次')
     write(a, '/conversation-actions/' + result2['result']['action_id'] + '/confirm', {'version': 1})
-    assert a.get('/api/workouts').json()['total'] == 1
+    assert a.get('/api/workouts?on=2026-01-02').json()['total'] == 1
 
 
 def test_correctable_tool_error_returns_to_model(env):
@@ -197,7 +197,7 @@ def test_update_card_shows_before_and_after(env):
     assert details['before']['exercises'][0]['sets'][0]['weight_kg'] == '60.125'
     assert details['after']['exercises'][0]['sets'][0]['weight_kg'] == '70'
     # Names are resolved so the user sees real exercise labels, not raw IDs.
-    assert details['after']['exercises'][0]['name_snapshot'] == '杠铃卧推'
+    assert details['after']['exercises'][0]['name'] == '杠铃卧推'
     write(a, '/conversation-actions/' + result['result']['action_id'] + '/confirm', {'version': 1})
     assert a.get('/api/workouts/' + workout['id']).json()['content']['exercises'][0]['sets'][0]['weight_kg'] == '70'
 
@@ -211,5 +211,5 @@ def test_custom_exercise_created_only_after_confirmation(env):
     assert '确认后将创建自定义动作' in result['result']['summary'] or '自创动作' in result['result']['summary']
     assert count(engine, Workout) == 0
     write(a, '/conversation-actions/' + result['result']['action_id'] + '/confirm', {'version': 1})
-    saved = a.get('/api/workouts').json()['items'][0]
-    assert saved['content']['exercises'][0]['name_snapshot'] == '自创动作'
+    saved = a.get('/api/workouts?on=2026-01-02').json()['items'][0]
+    assert saved['content']['exercises'][0]['name'] == '自创动作'

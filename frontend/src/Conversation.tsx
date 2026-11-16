@@ -71,6 +71,7 @@ export function Conversation({
   const [id, setIdState] = useState<string | null>(null),
     [data, setData] = useState<Snapshot | null>(null);
   const [text, setText] = useState("");
+  const [hasStreamText, setHasStreamText] = useState(false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
@@ -278,6 +279,7 @@ export function Conversation({
       timer = undefined;
       if (valid()) setDrafts(currentDrafts.map((item) => ({ ...item })));
     };
+    setHasStreamText(false);
     setPartialFailed(false);
     setDrafts([]);
     setSentDraft(p.sentText || "");
@@ -310,6 +312,7 @@ export function Conversation({
             if (event === "message_start")
               currentDrafts.push({ message_id: payload.message_id, text: "" });
             if (event === "text_delta") {
+              if (payload.text) setHasStreamText(true);
               const item = currentDrafts.find(
                 (item) => item.message_id === payload.message_id,
               );
@@ -548,6 +551,7 @@ export function Conversation({
           );
         })}
         {sentDraft && <div className="message-bubble user">{sentDraft}</div>}
+        {busy && !hasStreamText && <div className="thinking-status" role="status" aria-live="polite">思考中…</div>}
         {drafts
           .filter(
             (item) =>

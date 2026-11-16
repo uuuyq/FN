@@ -9,10 +9,12 @@ import { TrainingSummary, type SummaryContent } from "./TrainingSummary";
 
 const profileFieldNames: Record<string, string> = {
   goal: "训练目标",
+  restrictions: "限制",
   days_per_week: "每周训练天数",
   minutes_per_session: "单次时长（分钟）",
-  preferences: "偏好",
-  restrictions: "限制",
+  preferences: "个人偏好",
+  training_principles: "训练指导原则",
+  history_workout_count: "参考训练次数",
   timezone: "时区",
 };
 
@@ -112,6 +114,21 @@ function Details({
         ))}
       </>
     );
+  if (action.operation === "add_exercise")
+    return (
+      <>
+        <p>新增个人动作：{details.name}</p>
+        {action.status === "pending" && <p>确认后加入选择动作。</p>}
+        {action.status === "confirmed" && <p>已加入选择动作。</p>}
+        {[
+          ["aliases", "别名"], ["primary_muscles", "主要肌群"],
+          ["secondary_muscles", "辅助肌群"], ["equipment", "器械"],
+          ["description", "说明"],
+        ].map(([key, label]) => (
+          <p key={key}>{label}：{details[key] || "未填写"}</p>
+        ))}
+      </>
+    );
   if (action.operation === "add_equipment")
     return <p>新增可用器械：{details.name}</p>;
   // Unknown operations keep the generic summary instead of undefined.
@@ -160,7 +177,11 @@ export function ConversationActionCard({
         <Alert type="warning" message={`将创建自定义动作：${action.details.creating_custom.join("、")}`} />
       )}
       {action.operation === "undo_operation" && <p>{action.details?.effect}</p>}
-      <details><summary>查看详情</summary><Details action={action} names={names} /></details>
+      {action.operation === "add_exercise" ? (
+        <Details action={action} names={names} />
+      ) : (
+        <details><summary>查看详情</summary><Details action={action} names={names} /></details>
+      )}
       {failed && action.result?.error?.message && (
         <Alert
           type="error"

@@ -16,12 +16,16 @@ if (!(Test-Path -LiteralPath $stateFile)) {
     Remove-Item -LiteralPath $stateFile
     Write-Host 'FitPlan stopped. SQLite WAL is recovered at the next connection.'
 }
-$taskName = 'FitPlan-WorkoutCleanup'
-$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if ($task) {
-    if ($task.Actions.WorkingDirectory -ne (Join-Path $projectRoot 'backend')) {
-        throw 'An unrelated task uses this name; refusing to unregister it'
+try {
+    $taskName = 'FitPlan-WorkoutCleanup'
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) {
+        if ($task.Actions.WorkingDirectory -ne (Join-Path $projectRoot 'backend')) {
+            throw 'An unrelated task uses this name; refusing to unregister it'
+        }
+        Unregister-ScheduledTask -ErrorAction Stop -TaskName $taskName -Confirm:$false
+        Write-Host 'Workout cleanup task unregistered'
     }
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
-    Write-Host 'Workout cleanup task unregistered'
+} catch {
+    Write-Warning ('Workout cleanup task unregistration failed: ' + $_.Exception.Message)
 }

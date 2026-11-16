@@ -1,5 +1,9 @@
 import os
 from alembic import context
+from alembic.operations import Operations
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import inspect, text
 from app.core.database import Base, make_engine
 from app import models
 
@@ -14,6 +18,21 @@ with engine.connect() as connection:
         with connection.begin():
             connection.exec_driver_sql('BEGIN IMMEDIATE')
             context.configure(connection=connection, target_metadata=Base.metadata, render_as_batch=True)
+            # Upgrade databases created before the migration history was consolidated.
+            inspector = inspect(connection)
+            if inspector.has_table('alembic_version'):
+                revision = connection.execute(text('SELECT version_num FROM alembic_version')).scalar()
+                if revision in ('0001', '0002', '0003', '0004') and inspector.has_table('equipment'):
+                    has_category = any(column['name'] == 'category' for column in inspector.get_columns('equipment'))
+                    initial = ScriptDirectory.from_config(config).get_revision('0001').module
+                    with Operations.context(MigrationContext.configure(connection)):
+                        if not inspector.has_table('agent_operations'):
+                            initial.upgrade_operations()
+                        if revision in ('0001', '0002') and not has_category:
+                            initial.upgrade_profile()
+                        if not has_category:
+                            initial.upgrade_categories()
+                    connection.execute(text("UPDATE alembic_version SET version_num = '0001'"))
             with context.begin_transaction():
                 context.run_migrations()
             if connection.exec_driver_sql('PRAGMA foreign_key_check').fetchall():

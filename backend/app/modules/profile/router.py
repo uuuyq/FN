@@ -18,7 +18,7 @@ def ai_config_view(user):
     if not all(config.get(field) for field in ('api_key', 'model', 'base_url')):
         return {'configured': False}
     return {'configured': True, 'version': user.ai_config_version, 'model': config['model'],
-            'base_url': config['base_url'], 'has_api_key': bool(config.get('api_key'))}
+            'reasoning_effort': config.get('reasoning_effort', 'high'), 'base_url': config['base_url'], 'has_api_key': bool(config.get('api_key'))}
 
 
 def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash):
@@ -49,7 +49,7 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
 
     async def probe(db, user_id, body):
         try:
-            await test_connection(resolve_key(db, user_id, body), body.model, body.base_url)
+            await test_connection(resolve_key(db, user_id, body), body.model, body.base_url, body.reasoning_effort)
         except ProviderError as error:
             fail(502, str(error))
 
@@ -68,7 +68,7 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
             user = db.get(User, user_id)
             version(user, body.version, 'ai_config_version')
             user.ai_config = {'api_key': resolve_key(db, user_id, body), 'model': body.model,
-                              'base_url': str(body.base_url).rstrip('/')}
+                              'base_url': str(body.base_url).rstrip('/'), 'reasoning_effort': body.reasoning_effort}
             user.ai_config_version += 1
             return ai_config_view(user)
         return mutate(request, user_id, x_request_id, body, action)

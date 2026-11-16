@@ -6,6 +6,7 @@ domain logic and never returns provider bodies or credentials.
 import asyncio
 import json
 import os
+from urllib.parse import urlparse
 from pathlib import Path
 
 import httpx
@@ -54,6 +55,19 @@ def resolve_config(config):
     return key, model, base
 
 
+def reasoning_parameters(base_url, effort=None):
+    if effort is None:
+        path = Path(os.getenv('AI_CONFIG_PATH', str(Path(__file__).resolve().parents[3] / 'config.yaml')))
+        config = yaml.safe_load(path.read_text(encoding='utf-8')) if path.exists() else {}
+        effort = os.getenv('AI_REASONING_EFFORT') or (config or {}).get('reasoning_effort') or 'high'
+    if effort not in ('none', 'low', 'high', 'max'):
+        raise ProviderError('model_config_invalid')
+    params = {'reasoning_effort': effort}
+    if urlparse(str(base_url)).hostname == 'api.deepseek.com':
+        params['thinking'] = {'type': 'disabled' if effort == 'none' else 'enabled'}
+    return params
+
+
 def _parse_calls(message):
     calls = []
     for item in message.get('tool_calls') or []:
@@ -91,6 +105,7 @@ class Provider:
             'parallel_tool_calls': False,
             'max_tokens': max(16, int(max_tokens)),
         }
+        payload.update(reasoning_parameters(base, (config or {}).get('reasoning_effort')))
         published = False
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             for attempt in range(2):
@@ -107,6 +122,7 @@ class Provider:
                             raise ProviderError('model_http_error')
                         if 'text/event-stream' in response.headers.get('content-type', ''):
                             content, calls, finish, size = '', {}, None, 0
+                            reasoning = ''
                             fields = []
                             ended = False
                             async for line in response.aiter_lines():
@@ -129,6 +145,7 @@ class Provider:
                                     if choice.get('index', 0) != 0:
                                         continue
                                     delta = choice.get('delta') or {}
+                                    reasoning += delta.get('reasoning_content') or ''
                                     text = delta.get('content') or ''
                                     if not isinstance(text, str):
                                         raise ProviderError('model_invalid_output')
@@ -146,7 +163,7 @@ class Provider:
                             if not ended or finish is None:
                                 raise ProviderError('model_incomplete_output')
                             data = {'choices': [{'finish_reason': finish, 'message': {
-                                'content': content, 'tool_calls': [calls[k] for k in sorted(calls)]}}]}
+                                'content': content, 'reasoning_content': reasoning, 'tool_calls': [calls[k] for k in sorted(calls)]}}]}
                         else:
                             chunks, size = [], 0
                             async for chunk in response.aiter_bytes():
@@ -158,13 +175,13 @@ class Provider:
                     choice = data['choices'][0]
                     message = choice.get('message') or {}
                     if choice.get('finish_reason') == 'tool_calls':
-                        return ModelReply(type='tool_calls', content=message.get('content') or '', calls=_parse_calls(message))
+                        return ModelReply(type='tool_calls', content=message.get('content') or '', reasoning_content=message.get('reasoning_content'), calls=_parse_calls(message))
                     if choice.get('finish_reason') != 'stop':
                         raise ProviderError('model_incomplete_output')
                     content = message.get('content')
                     if not isinstance(content, str) or not content.strip():
                         raise ProviderError('model_invalid_output')
-                    return ModelReply(type='text', content=content)
+                    return ModelReply(type='text', content=content, reasoning_content=message.get('reasoning_content'))
                 except httpx.TransportError:
                     if attempt or published:
                         raise ProviderError('model_unavailable') from None
@@ -183,12 +200,13 @@ PROBE_TOOLS = [{'type': 'function', 'function': {
     'parameters': {'type': 'object', 'properties': {}, 'required': []}}}]
 
 
-async def test_connection(api_key, model, base_url):
+async def test_connection(api_key, model, base_url, reasoning_effort=None):
     """Verify reachability and the native tool-calling response structure."""
     payload = {'model': str(model), 'messages': [{'role': 'user', 'content': '请调用 ping 工具'}],
-               'tools': PROBE_TOOLS, 'tool_choice': 'auto', 'parallel_tool_calls': False, 'max_tokens': 100}
+               'tools': PROBE_TOOLS, 'tool_choice': 'auto', 'parallel_tool_calls': False, 'max_tokens': 16000}
+    payload.update(reasoning_parameters(base_url, reasoning_effort))
     try:
-        async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=65, follow_redirects=False) as client:
             response = await client.post(str(base_url).rstrip('/') + '/chat/completions',
                     headers={'Authorization': 'Bearer ' + str(api_key)}, json=payload)
     except httpx.TransportError:

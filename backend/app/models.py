@@ -86,12 +86,14 @@ def normalize_exercise_fields(mapper, connection, target):
 
 class Equipment(Base):
     __tablename__ = 'equipment'
+    category: Mapped[str] = mapped_column(default='其他', server_default='其他')
     id: Mapped[str] = mapped_column(primary_key=True, default=uid)
     name: Mapped[str] = mapped_column(unique=True)
 
 
 class UserEquipment(Base):
     __tablename__ = 'user_equipment'
+    category: Mapped[str] = mapped_column(default='其他', server_default='其他')
     id: Mapped[str] = mapped_column(primary_key=True, default=uid)
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
     equipment_id: Mapped[str | None] = mapped_column(ForeignKey('equipment.id'))

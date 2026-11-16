@@ -48,7 +48,8 @@ def test_save_version_conflict_and_blank_key_reuse(env, monkeypatch):
 def test_test_endpoint_uses_stored_or_requires_key(env, monkeypatch):
     _, (client, _) = env
     seen = {}
-    async def probe(key, model, base_url):
+    async def probe(key, model, base_url, effort):
+        assert effort == 'high'
         seen.update(key=key, model=model, base_url=str(base_url))
     monkeypatch.setattr(profile_router, 'test_connection', probe)
     response = client.post('/api/ai-config/test', json={'base_url': 'https://x.example/v1', 'model': 'm'})
@@ -61,3 +62,26 @@ def test_test_endpoint_uses_stored_or_requires_key(env, monkeypatch):
     response = client.post('/api/ai-config/test', json={'base_url': 'https://x.example/v1', 'model': 'm', 'api_key': 'fresh'})
     assert response.status_code == 200
     assert seen['key'] == 'fresh'
+
+
+def test_reasoning_settings(env, monkeypatch):
+    _, (client, _) = env
+    async def passing(*args):
+        assert args[-1] == 'low'
+    monkeypatch.setattr(profile_router, 'test_connection', passing)
+    body = {'base_url': 'https://api.deepseek.com', 'model': 'deepseek-flash',
+            'api_key': 'synthetic', 'version': 1, 'reasoning_effort': 'low'}
+    saved = write(client, '/ai-config', body, method='PUT')
+    assert saved['reasoning_effort'] == 'low'
+    assert client.get('/api/ai-config').json()['reasoning_effort'] == 'low'
+    body['reasoning_effort'] = 'invalid'
+    write(client, '/ai-config', body, method='PUT', status=422)
+
+
+def test_reasoning_parameters(monkeypatch):
+    from app.agent.provider import reasoning_parameters
+    monkeypatch.setenv('AI_REASONING_EFFORT', 'low')
+    assert reasoning_parameters('https://api.deepseek.com')['reasoning_effort'] == 'low'
+    assert reasoning_parameters('https://api.deepseek.com', 'none') == {
+        'reasoning_effort': 'none', 'thinking': {'type': 'disabled'}}
+    assert reasoning_parameters('https://example.com/v1', 'max') == {'reasoning_effort': 'max'}

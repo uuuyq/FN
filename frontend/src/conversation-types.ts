@@ -82,6 +82,7 @@ export const operationNames: Record<string, string> = {
   update_profile: "修改个人条件",
   update_preferences: "修改动作偏好",
   add_equipment: "新增器械",
+  add_exercise: "新增动作",
 };
 
 export const statusNames: Record<string, string> = {
@@ -94,11 +95,11 @@ export const statusNames: Record<string, string> = {
 };
 
 export function operationName(operation: string | undefined): string {
-  return (operation && operationNames[operation]) || operation || "操作";
+  return (operation && operationNames[operation]) || "操作";
 }
 
 export function statusName(status: string | undefined): string {
-  return (status && statusNames[status]) || status || "未知状态";
+  return (status && statusNames[status]) || "未知状态";
 }
 
 /** Actions are immutable rows; the last row per action_id is the current state. */

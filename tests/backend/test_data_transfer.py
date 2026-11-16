@@ -43,8 +43,8 @@ def test_invalid_import_preserves_database(tmp_path, database_template, damage):
     if damage == 'foreign_key':
         payload['tables']['users']['rows'] = []
         # Create an orphan even when the seeded template has no dependent records.
-        entry = payload['tables']['exercise_preferences']
-        entry['rows'] = [['missing-user', 'missing-exercise', 1, 1]]
+        entry = payload['tables']['user_exercise_preferences']
+        entry['rows'] = [['orphan', 'missing-user', 'missing-exercise', None, 1, 1]]
     elif damage == 'unique':
         payload['tables']['users']['rows'].append(payload['tables']['users']['rows'][0])
     elif damage == 'schema':

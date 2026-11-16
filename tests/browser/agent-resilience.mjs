@@ -35,11 +35,29 @@ await runE2E("agent-resilience", async ({ origin, login, scenario }) => {
     return { cid: response.url().split("/conversations/")[1].split("/")[0], turn };
   };
   const snapshot = async (cid) => (await (await request("/conversations/" + cid)).json());
-  const count = async () => (await (await request("/workouts")).json()).total;
+  const count = async () => (await (await request("/workouts?on=" + new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }))).json()).total;
+
+  await scenario("SSE displays text before completion and reconciles once", async () => {
+    await page.getByRole("textbox", { name: "训练消息", exact: true }).fill("SSE incremental test");
+    await page.getByRole("button", { name: "发送消息", exact: true }).click();
+    await expect(page.locator(".thinking-status")).toBeVisible();
+    const partial = page.locator(".message-bubble.assistant").filter({hasText: "SSE first chunk"});
+    await expect(partial).toHaveText("SSE first chunk", {timeout: 1500});
+    await expect(page.locator(".thinking-status")).toHaveCount(0);
+    await expect(page.getByRole("textbox", { name: "训练消息", exact: true })).toHaveValue("SSE incremental test");
+    await expect(partial).toHaveText("SSE first chunk and final chunk");
+    await expect(page.getByRole("textbox", { name: "训练消息", exact: true })).toHaveValue("");
+    await expect(partial).toHaveCount(1);
+    await newChat();
+  });
 
   await scenario("pending card survives reload once, with the same ID", async () => {
     const { cid } = await send("取消新增测试");
     await expect(cards()).toHaveCount(1);
+    const detail = cards().locator("details");
+    await expect(detail).not.toHaveAttribute("open", "");
+    await detail.locator("summary").click();
+    await expect(detail).toHaveAttribute("open", "");
     const id = await cards().getAttribute("data-action-id");
     await page.reload();
     await page.getByRole("button", { name: "展开历史对话", exact: true }).click();
@@ -51,13 +69,16 @@ await runE2E("agent-resilience", async ({ origin, login, scenario }) => {
     await expect(cards()).toHaveCount(0);
   });
 
-  await scenario("expired card returns 409 and cannot save", async () => {
+  await scenario("plain query keeps a card executable; cancelled card cannot confirm", async () => {
     await newChat();
     const { cid } = await send("取消新增测试");
-    const stale = (await snapshot(cid)).actions[0];
+    const pending = (await snapshot(cid)).actions[0];
     await send("查询训练");
-    await expect(page.locator(`[data-action-id="${stale.action_id}"]`)).toHaveAttribute("data-action-status", "superseded");
-    const response = await request(`/conversation-actions/${stale.action_id}/confirm`, "POST", { version: stale.version });
+    // G13: a plain query neither invalidates the card nor blocks confirming.
+    await expect(page.locator(`[data-action-id="${pending.action_id}"]`)).toHaveAttribute("data-action-status", "pending");
+    const cancelled = await request(`/conversation-actions/${pending.action_id}/cancel`, "POST", { version: pending.version });
+    assert.equal(cancelled.status(), 200);
+    const response = await request(`/conversation-actions/${pending.action_id}/confirm`, "POST", { version: pending.version });
     assert.equal(response.status(), 409);
     assert.equal(await count(), 0);
   });
@@ -72,7 +93,9 @@ await runE2E("agent-resilience", async ({ origin, login, scenario }) => {
     assert.equal(await count(), 1);
     const history = await snapshot(cid);
     assert.equal(history.messages.filter((m) => m.event_kind === "action_confirmed").length, 1);
-    assert.equal(history.turns.length, 1);
+    assert.equal(history.turns.length, 2);
+    assert.equal(history.messages.filter((m) => m.role === "user").length, 1);
+    await expect(page.getByText("Agent 收到操作结果：confirmed", { exact: true })).toBeVisible();
   });
 
   await scenario("lost confirm response recovers committed state without a second write", async () => {
@@ -145,7 +168,7 @@ await runE2E("agent-resilience", async ({ origin, login, scenario }) => {
     assert.equal((await other.page.request.post(origin + `/api/conversation-actions/${action.action_id}/confirm`, {
       data: { version: action.version }, headers: { "X-CSRF-Token": otherCSRF, "X-Request-ID": crypto.randomUUID() },
     })).status(), 404);
-    assert.equal((await (await other.page.request.get(origin + "/api/workouts")).json()).total, 0);
+    assert.equal((await (await other.page.request.get(origin + "/api/workouts?on=" + new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }))).json()).total, 0);
     assert.equal((await (await other.page.request.get(origin + "/api/conversations")).json()).items.length, 0);
     assert.deepEqual(other.errors, []);
     await cards().getByRole("button", { name: "取消新增训练", exact: true }).click();

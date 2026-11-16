@@ -8,7 +8,7 @@ from ..contracts import ExecutionResult, ToolError
 from .. import actions
 
 # Errors the model can act on by changing arguments or re-reading data.
-CORRECTABLE = {'operation_already_undone', 'operation_expired', 'snapshot_missing', 'validation_error', 'version_conflict', 'workout_trashed', 'exercise_not_found',
+CORRECTABLE = {'exercise_name_taken', 'operation_already_undone', 'operation_expired', 'snapshot_missing', 'validation_error', 'version_conflict', 'workout_trashed', 'exercise_not_found',
                'equipment_not_found', 'not_found', 'invalid_query', 'duplicate_exercise',
                'duplicate_stable_id', 'stable_id_conflict', 'ambiguous_workout_target',
                'missing_key_information'}
@@ -36,7 +36,7 @@ def run(ctx, registry, name, arguments):
             tool.validate(ctx, params)
         if tool.execution == 'direct':
             return ExecutionResult(data=tool.execute(ctx, params))
-        payload = params.model_dump(mode='json')
+        payload = params.model_dump(mode='json', exclude_unset=tool.name == 'update_profile')
         action = actions.propose(ctx, tool, payload)
         return ExecutionResult(data={'confirmation_required': True, 'action_id': action.id,
             'operation': action.operation, 'version': action.version, 'summary': action.summary},

@@ -22,6 +22,7 @@ class ModelReply(Schema):
     """One complete model response: either text or a batch of tool calls."""
     type: Literal['text', 'tool_calls']
     content: str | None = None
+    reasoning_content: str | None = None
     calls: list[ToolCallRequest] = Field(default_factory=list)
 
     @model_validator(mode='after')

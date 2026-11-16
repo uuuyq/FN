@@ -1,8 +1,8 @@
 """Runtime context assembly: system prompt, context JSON and full history.
 
 Every model call receives the fixed system prompt, one context user message,
-the complete persisted history ordered by sequence, and this turn's new tool
-messages. Nothing is truncated; over-budget requests fail with a stable error.
+persisted history ordered by sequence, with old planning results summarized,
+and this turn's complete tool messages. Over-budget requests fail explicitly.
 """
 import json
 from datetime import datetime
@@ -42,7 +42,6 @@ def runtime_context(db, user_id, mode, pending_action=None):
     return {'today': datetime.now(ZoneInfo(profile['timezone'])).date().isoformat(),
             'timezone': profile['timezone'],
             'mode': mode,
-            'profile': profile,
             'equipment': [{'id': row.id, 'name': row.name, 'equipment_id': row.equipment_id} for row in db.scalars(
                 select(UserEquipment).where(UserEquipment.user_id == user_id))],
             'catalog': catalog,
@@ -86,7 +85,7 @@ def resolved_tool_content(content, outcomes):
     outcome = outcomes.get(pending['data'].get('action_id'))
     if outcome is None:
         return content
-    result = {'ok': outcome['status'] == 'confirmed', 'data': {
+    result = {'ok': outcome['status'] in ('confirmed', 'cancelled'), 'data': {
         'status': outcome['status'], 'action_id': outcome['action_id'], 'result': outcome.get('result')}}
     receipt = outcome.get('result')
     if isinstance(receipt, dict) and receipt.get('error'):
@@ -101,22 +100,35 @@ def assemble(db, conversation_id, runtime, tool_schemas, read_only=False):
         Message.conversation_id == conversation_id).order_by(Message.sequence)).all()
     outcomes = {row.event_data['action_id']: row.event_data for row in rows
                 if row.event_kind == 'action_result' and row.event_data and row.event_data.get('action_id')}
+    plan_calls = {call['id'] for row in rows for call in (row.tool_calls or [])
+                  if call['name'] == 'get_training_plan_context'}
     for row in rows:
         if row.role == 'user':
             messages.append({'role': 'user', 'content': row.content})
         elif row.role == 'assistant':
             if row.tool_calls:
-                messages.append({'role': 'assistant', 'content': row.content or None, 'tool_calls': [
+                messages.append({'role': 'assistant', 'content': row.content or None,
+                                 'reasoning_content': (row.event_data or {}).get('reasoning_content', ''), 'tool_calls': [
                     {'id': call['id'], 'type': 'function',
                      'function': {'name': call['name'], 'arguments': json.dumps(call['arguments'], ensure_ascii=False)}}
                     for call in row.tool_calls]})
             else:
-                messages.append({'role': 'assistant', 'content': row.content})
+                messages.append({'role': 'assistant', 'content': row.content,
+                                 'reasoning_content': (row.event_data or {}).get('reasoning_content', '')})
         elif row.role == 'tool':
             messages.append({'role': 'tool', 'tool_call_id': row.tool_call_id,
-                             'content': resolved_tool_content(row.content, outcomes)})
-        elif row.role == 'event' and row.event_kind != 'action_result':
-            messages.append({'role': 'assistant', 'content': '[服务端操作结果] ' + row.content})
+                             'content': historical_plan_content(row.content) if row.tool_call_id in plan_calls
+                             else resolved_tool_content(row.content, outcomes)})
+        elif row.role == 'event' and row.event_kind == 'action_result':
+            if messages[-1]['role'] != 'tool':
+                outcome = row.event_data or {}
+                messages.append({'role': 'user', 'content': '[服务端操作结果] ' + json.dumps(
+                    {'action_id': outcome.get('action_id'), 'status': outcome.get('status')},
+                    ensure_ascii=False)})
+        elif row.role == 'event':
+            if (row.event_data or {}).get('action_id') in outcomes:
+                continue  # The original tool result already carries this outcome.
+            messages.append({'role': 'user', 'content': '[服务端操作结果] ' + row.content})
     check_budget(messages, tool_schemas)
     return messages
 
@@ -128,3 +140,17 @@ def fresh_messages(db, user_id, conversation_id, mode, tool_schemas, read_only=F
             'summary': current[0].summary, 'created_at': current[0].created_at} if current else None
     runtime = runtime_context(db, user_id, mode, pending_action=card)
     return assemble(db, conversation_id, runtime, tool_schemas, read_only=read_only)
+
+
+def historical_plan_content(content):
+    result = json.loads(content)
+    data = result.get('data')
+    if not result.get('ok') or not isinstance(data, dict):
+        return content
+    return json.dumps({'ok': True, 'data': {
+        'target_date': data['target_date'], 'loaded_at': data['loaded_at'],
+        'profile_version': data['profile']['version'],
+        'reference_workouts': [{'id': item['id'], 'version': item['version']}
+                               for item in data['recent_workouts']],
+        'note': '历史计划资料已摘要化。可结合已有方案和用户补充继续调整；需要最新资料时调用 get_training_plan_context。'
+    }}, ensure_ascii=False)

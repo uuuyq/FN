@@ -131,7 +131,10 @@ def update_preferences(db, user_id, body):
 def add_equipment(db, user_id, body):
     if body.equipment_id and not db.get(Equipment, body.equipment_id):
         fail(404, 'equipment_not_found')
-    row = UserEquipment(user_id=user_id, **body.model_dump())
+    values = body.model_dump()
+    preset = db.get(Equipment, body.equipment_id) if body.equipment_id else None
+    values['category'] = body.category or (preset.category if preset else '其他')
+    row = UserEquipment(user_id=user_id, **values)
     db.add(row)
     db.flush()
     return serialize(row)

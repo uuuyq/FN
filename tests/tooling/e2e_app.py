@@ -9,8 +9,7 @@ from zoneinfo import ZoneInfo
 
 def _content(reps, weight="60"):
     return {"actual_date": datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat(),
-            "exercises": [{"exercise_id": "bench-press", "weight_mode": "external",
-                           "weight_scope": "total", "sets": [{"weight_kg": weight, "reps": reps}]}]}
+            "exercises": [{"exercise_id": "bench-press", "sets": [{"weight_kg": weight, "reps": reps}]}]}
 
 
 def create_app():
@@ -26,11 +25,26 @@ def create_app():
     class ScriptedProvider:
         failed_once = False
 
-        async def generate(self, messages, tools, config=None, timeout=None, max_tokens=None):
+        async def generate(self, messages, tools, config=None, timeout=None, max_tokens=None, on_delta=None):
             # Only results after this input can determine the current tool stage.
             index = max(i for i, m in enumerate(messages) if m["role"] == "user")
             text = messages[index]["content"]
+            if text == "SSE incremental test":
+                await asyncio.sleep(0.4)
+                if on_delta:
+                    await on_delta("SSE first chunk")
+                    await asyncio.sleep(2)
+                    await on_delta(" and final chunk")
+                return ModelReply(type="text", content="SSE first chunk and final chunk")
             results = [json.loads(m["content"]) for m in messages[index + 1:] if m["role"] == "tool"]
+            # Resolved confirmation receipts return through the original tool call.
+            outcome_results = results
+            if messages[-1].get("content", "").startswith("[服务端操作结果]"):
+                outcome_results = [json.loads(m["content"]) for m in messages if m["role"] == "tool"]
+            for result in reversed(outcome_results):
+                outcome = result.get("data") or {}
+                if outcome.get("status") in ("confirmed", "cancelled", "conflict", "failed"):
+                    return ModelReply(type="text", content="Agent 收到操作结果：" + outcome["status"])
             if text == "检查长历史":
                 count = sum(m["role"] == "user" for m in messages) - 1
                 return ModelReply(type="text", content=f"历史中保留 {count} 条用户输入。")
@@ -39,7 +53,7 @@ def create_app():
             if text == "模拟模型超时":
                 raise ProviderError("model_timeout")
             if text == "循环查询":
-                return call("list_workouts", latest=True)
+                return call("list_workouts", on=_content(8)["actual_date"])
             if text == "慢速记录":
                 await asyncio.sleep(3)
                 return call("save_workout", content=_content(8))
@@ -51,15 +65,26 @@ def create_app():
             if text == "信息不全":
                 return ModelReply(type="text", content="卧推的重量和次数是多少？也可以明确留空。")
             if text == "直接写入，重量次数留空":
-                return call("save_workout", content=_content(None, None))
+                # Explicit user skip travels with the proposal and is disclosed.
+                return call("save_workout", content=_content(None, None),
+                            allow_missing=["reps", "weight_kg"],
+                            assumptions=["重量与次数按用户要求留空"])
+            if text == "次数不全的记录":
+                # Premature proposal: the readiness check rejects it with a reason.
+                if not results:
+                    return call("save_workout", content=_content(None))
+                assert results[-1]["error"]["code"] == "missing_key_information"
+                return ModelReply(type="text", content="还差次数，请补充每组次数（{}）。".format(results[-1]["error"]["field"]))
+            if text == "次数是8":
+                return call("save_workout", content=_content(8))
             if text == "查询训练":
                 if not results:
-                    return call("list_workouts", limit=20)
+                    return call("list_workouts", on=_content(8)["actual_date"], limit=20)
                 data = results[-1]["data"]
                 return ModelReply(type="text", content=f"查询完成：共 {data['total']} 条训练。")
             if text in ("删除这条记录", "修改为10次", "再记录一次"):
                 if not results:
-                    return call("list_workouts", latest=True)
+                    return call("list_workouts", on=_content(8)["actual_date"])
                 data = results[-1]["data"]
                 if "items" in data:
                     if not data["items"]:
@@ -71,7 +96,7 @@ def create_app():
                 updated = deepcopy(data["content"])
                 updated.pop("missing_information", None)
                 for exercise in updated["exercises"]:
-                    exercise.pop("name_snapshot", None)
+                    exercise.pop("name", None)
                 updated["exercises"][0]["sets"][0]["reps"] = 10
                 return call("save_workout", content=updated, workout_id=data["id"], expected_version=data["version"])
             if text == "第一组改9次":
@@ -82,13 +107,15 @@ def create_app():
                 data["exercises"][0]["custom_name"] = "端到端自定义划船"
                 return call("save_workout", content=data)
             if text in ("更新个人条件", "更新动作偏好"):
-                raw = messages[1]["content"]
+                raw = next(m["content"] for m in messages if m["role"] == "user" and "catalog" in m["content"] and "{" in m["content"])
                 runtime = json.JSONDecoder().raw_decode(raw[raw.index("{"):])[0]
                 if text == "更新个人条件":
-                    return call("update_profile", **{**runtime["profile"], "goal": "端到端增肌目标"})
+                    if not results:
+                        return call("get_profile")
+                    return call("update_profile", **{**results[-1]["data"], "preferences": "端到端增肌目标"})
                 entry = next(e for e in runtime["catalog"] if e["id"] == "bench-press")
                 return call("update_preferences", items=[{"exercise_id": entry["id"],
-                    "version": entry["preference_version"], "available": True}])
+                    "version": entry["preference_version"], "active": True}])
             if text == "新增器械":
                 return call("add_equipment", name="端到端弹力带")
             if text in ("端到端记录", "取消新增测试"):

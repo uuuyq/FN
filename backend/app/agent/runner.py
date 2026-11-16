@@ -56,6 +56,7 @@ async def run(app, turn_id, user_id, token):
     deadline = time.monotonic() + LIMITS['total_seconds']
     model_calls = tool_calls_used = 0
     messages = None
+    plan_guidance_loaded = False
     registry = build_registry()
     try:
         while True:
@@ -98,7 +99,8 @@ async def run(app, turn_id, user_id, token):
                 with write_transaction(engine) as db:
                     _alive(db, turn_id, user_id, token)
                     _remaining(deadline)
-                    add_message(db, row.conversation_id, turn_id, 'assistant', content=reply.content)
+                    add_message(db, row.conversation_id, turn_id, 'assistant', content=reply.content,
+                                event_data={'reasoning_content': reply.reasoning_content or ''})
                     _remaining(deadline)
                     _finish(db, turn_id, user_id, token, 'succeeded', result={'type': 'reply'})
                 return
@@ -114,12 +116,13 @@ async def run(app, turn_id, user_id, token):
                 with write_transaction(engine) as db:
                     _alive(db, turn_id, user_id, token)
                     _remaining(deadline)
-                    messages.append({'role': 'assistant', 'content': None, 'tool_calls': [
+                    messages.append({'role': 'assistant', 'content': None, 'reasoning_content': reply.reasoning_content or '', 'tool_calls': [
                         {'id': call.id, 'type': 'function',
                          'function': {'name': call.name, 'arguments': json.dumps(call.arguments, ensure_ascii=False)}}
                         for call in reply.calls]})
                     add_message(db, row.conversation_id, turn_id, 'assistant',
-                        tool_calls=[executor.build_payload(call) for call in reply.calls])
+                        tool_calls=[executor.build_payload(call) for call in reply.calls],
+                        event_data={'reasoning_content': reply.reasoning_content or ''})
                     for call in reply.calls:
                         result = tool_result(False, error=error)
                         add_message(db, row.conversation_id, turn_id, 'tool',
@@ -139,9 +142,11 @@ async def run(app, turn_id, user_id, token):
                 tool_calls_used += len(reply.calls)
                 add_message(db, row.conversation_id, turn_id, 'assistant',
                     content=reply.content or '',
-                    tool_calls=[executor.build_payload(call) for call in reply.calls])
+                    tool_calls=[executor.build_payload(call) for call in reply.calls],
+                        event_data={'reasoning_content': reply.reasoning_content or ''})
+                batch_start = len(messages)
                 messages.append({'role': 'assistant', 'content': reply.content or None,
-                    'tool_calls': [{'id': call.id, 'type': 'function',
+                    'reasoning_content': reply.reasoning_content or '', 'tool_calls': [{'id': call.id, 'type': 'function',
                         'function': {'name': call.name, 'arguments': json.dumps(call.arguments, ensure_ascii=False)}}
                         for call in reply.calls]})
                 ctx = ToolContext(db=db, user_id=user_id, conversation_id=row.conversation_id,
@@ -157,6 +162,10 @@ async def run(app, turn_id, user_id, token):
                     add_message(db, row.conversation_id, turn_id, 'tool',
                         content=executor.result_text(result), tool_call_id=call.id)
                     messages.append({'role': 'tool', 'tool_call_id': call.id, 'content': executor.result_text(result)})
+                    if call.name == 'get_training_plan_context' and result.get('ok') and not plan_guidance_loaded:
+                        from .planning import planning_settings
+                        messages.insert(batch_start, {'role': 'system', 'content': planning_settings()['guidance_prompt']})
+                        plan_guidance_loaded = True
                     if outcome.continuation == 'await_confirmation':
                         break
                 if action is not None:

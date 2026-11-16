@@ -143,3 +143,69 @@ def test_test_connection_maps_auth_transport_and_tool_support(monkeypatch):
     _client(broken, monkeypatch)
     with pytest.raises(provider.ProviderError, match='model_unavailable'):
         asyncio.run(provider.test_connection('key', 'm', 'https://example.invalid/v1'))
+
+
+@pytest.mark.parametrize('tool', [False, True])
+def test_stream_emits_before_completion_and_assembles_tool_arguments(monkeypatch, tool):
+    emitted = []
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            def frame(delta, finish=None):
+                return ('data: ' + json.dumps({'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}) + '\n\n').encode()
+            yield frame({'content': '你好'})
+            assert emitted == ['你好']
+            if tool:
+                yield frame({'tool_calls': [{'index': 0, 'id': 'call_1', 'function': {'name': 'get_workout', 'arguments': '{"workout_'}}]})
+                yield frame({'tool_calls': [{'index': 0, 'function': {'arguments': 'id":"w1"}'}}]})
+            yield frame({}, 'tool_calls' if tool else 'stop')
+            yield b'data: [DONE]\n\n'
+    def handler(request):
+        assert json.loads(request.content)['stream'] is True
+        return httpx.Response(200, headers={'content-type': 'text/event-stream'}, stream=Chunks())
+    _client(handler, monkeypatch)
+    _config(monkeypatch)
+    async def collect(text):
+        emitted.append(text)
+    result = asyncio.run(provider.Provider().generate([], [], on_delta=collect))
+    assert result.content == '你好'
+    if tool:
+        assert result.calls[0].arguments == {'workout_id': 'w1'}
+
+
+def test_stream_disconnect_after_text_does_not_retry(monkeypatch):
+    requests, emitted = [], []
+    class Broken(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            raise httpx.ReadError('lost')
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, headers={'content-type': 'text/event-stream'}, stream=Broken())
+    _client(handler, monkeypatch)
+    _config(monkeypatch)
+    async def collect(text):
+        emitted.append(text)
+    with pytest.raises(provider.ProviderError, match='model_unavailable'):
+        asyncio.run(provider.Provider().generate([], [], on_delta=collect))
+    assert len(requests) == 1
+    assert emitted == ['partial']
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_reasoning_content_is_preserved_for_tool_continuation(monkeypatch, streaming):
+    data = tool_call_response()
+    data['choices'][0]['message']['reasoning_content'] = 'synthetic metadata'
+    def handler(request):
+        if not streaming:
+            return httpx.Response(200, json=data)
+        event = {'choices': [{'index': 0, 'delta': {
+            'reasoning_content': 'synthetic metadata',
+            'tool_calls': [{'index': 0, **data['choices'][0]['message']['tool_calls'][0]}]},
+            'finish_reason': 'tool_calls'}]}
+        return httpx.Response(200, headers={'content-type': 'text/event-stream'},
+            text='data: ' + json.dumps(event) + '\n\ndata: [DONE]\n\n')
+    _client(handler, monkeypatch)
+    _config(monkeypatch)
+    result = asyncio.run(provider.Provider().generate([], []))
+    assert result.reasoning_content == 'synthetic metadata'
+    assert result.calls[0].name == 'list_workouts'

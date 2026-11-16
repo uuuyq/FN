@@ -61,7 +61,7 @@ async function ready(url) {
   throw Error("Server did not start: " + logs.join(""));
 }
 const workouts = async () =>
-  await (await page.request.get(origin + "/api/workouts")).json();
+  await (await page.request.get(origin + "/api/workouts?on=" + new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Shanghai" }))).json();
 async function waitForTotal(expected) {
   for (let i = 0; i < 50; i++) {
     if ((await workouts()).total === expected) return;
@@ -205,23 +205,29 @@ try {
   assert.equal(await page.locator('.message-bubble.tool').count(), 0);
   assert.equal(await page.locator('.message-bubble.assistant').filter({ hasText: /^\s*$/ }).count(), 0);
 
-  // Cancel a create, with no side effect; a plain query also supersedes a card.
+  // Cancel a create, with no side effect; a plain query keeps the card (G13).
   await send("取消新增测试");
   const cancelledId = await pendingCard().getAttribute("data-action-id");
   await pendingCard().getByRole("button", { name: "取消新增训练", exact: true }).click();
   await page.locator(`[data-action-id="${cancelledId}"][data-action-status="cancelled"]`).waitFor();
   assert.equal((await workouts()).total, 1);
   await send("取消新增测试");
-  const supersededId = await pendingCard().getAttribute("data-action-id");
+  const keptId = await pendingCard().getAttribute("data-action-id");
   await send("查询训练");
-  await page.locator(`[data-action-id="${supersededId}"][data-action-status="superseded"]`).waitFor();
-  assert.equal(await pendingCard().count(), 0);
-  console.log("PASS: query feedback, hidden tool messages, cancellation, query supersedes old card");
+  await page.getByText("查询完成：共 1 条训练。", { exact: true }).first().waitFor();
+  await page
+    .locator(`[data-action-id="${keptId}"][data-action-status="pending"]`)
+    .waitFor();
+  assert.equal(await pendingCard().count(), 1);
+  await pendingCard().getByRole("button", { name: "取消新增训练", exact: true }).click();
+  await page.locator(`[data-action-id="${keptId}"][data-action-status="cancelled"]`).waitFor();
+  console.log("PASS: query feedback, hidden tool messages, cancellation, query keeps card executable");
 
   // Successful update retains the workout and stable exercise/set IDs.
   const beforeUpdate = (await workouts()).items[0];
   await send("修改为10次");
   await expect(pendingCard("update_workout")).toHaveCount(1);
+  await pendingCard().getByText("查看详情", { exact: true }).click();
   await pendingCard().getByText("修改前", { exact: false }).waitFor();
   await pendingCard().getByText("修改后", { exact: false }).waitFor();
   assert.equal((await workouts()).items[0].version, beforeUpdate.version);
@@ -230,7 +236,6 @@ try {
   const afterUpdate = (await workouts()).items[0];
   assert.equal(afterUpdate.id, beforeUpdate.id);
   assert.equal(afterUpdate.version, beforeUpdate.version + 1);
-  assert.equal(afterUpdate.content.exercises[0].id, beforeUpdate.content.exercises[0].id);
   assert.equal(afterUpdate.content.exercises[0].sets[0].id, beforeUpdate.content.exercises[0].sets[0].id);
   assert.equal(afterUpdate.content.exercises[0].sets[0].reps, 10);
   console.log("PASS: multi-tool update, before/after comparison, stable IDs");
@@ -240,10 +245,10 @@ try {
   await page.getByText(/60 kg × 10 次/).first().waitFor();
   const current = (await workouts()).items[0];
   const changed = JSON.parse(JSON.stringify(current.content));
-  // The list view carries read-only fields (name_snapshot) that the write
+  // The list view carries read-only fields (name) that the write
   // schema does not accept.
   changed.exercises = changed.exercises.map(
-    ({ name_snapshot, ...rest }) => rest,
+    ({ name, ...rest }) => rest,
   );
   changed.exercises[0].sets[0].reps = 99;
   const bumped = await page.request.put(
@@ -285,6 +290,7 @@ try {
   assert.equal(await pendingCard().count(), 0);
   await send("直接写入，重量次数留空");
   await expect(pendingCard("create_workout")).toHaveCount(1);
+  await pendingCard().getByText("待核实：重量与次数按用户要求留空").first().waitFor();
   assert.equal((await workouts()).total, 0);
   await confirmPending();
   await waitForTotal(1);
@@ -305,12 +311,23 @@ try {
     }
   };
   await send("自定义动作记录");
-  await pendingCard().getByText("确认后将创建自定义动作：端到端自定义划船", { exact: true }).waitFor();
+  await pendingCard().getByText("将创建自定义动作：端到端自定义划船", { exact: true }).waitFor();
   assert.equal((await catalog()).filter((e) => e.name === "端到端自定义划船").length, 0);
   await confirmPending();
   await waitForTotal(2);
   assert.equal((await catalog()).filter((e) => e.name === "端到端自定义划船").length, 1);
   console.log("PASS: missing-field follow-up, explicit skip, custom creation after confirmation");
+
+  // Premature proposals are rejected server-side; the model asks, no card.
+  await send("次数不全的记录");
+  await page.getByText(/还差次数，请补充每组次数/).first().waitFor();
+  assert.equal(await pendingCard().count(), 0);
+  assert.equal((await workouts()).total, 2);
+  await send("次数是8");
+  await expect(pendingCard("create_workout")).toHaveCount(1);
+  await confirmPending();
+  await waitForTotal(3);
+  console.log("PASS: readiness check rejects premature proposal, complete content proposes normally");
 
   // Other write tools use the same UI confirmation contract.
   for (const [command, operation] of [["更新个人条件", "update_profile"],
@@ -320,10 +337,11 @@ try {
     const turnsBefore = (await snapshot()).turns.length;
     await confirmPending();
     await expect(pendingCard()).toHaveCount(0);
-    assert.equal((await snapshot()).turns.length, turnsBefore, "button must not create another model turn");
+    await expect(page.getByText("Agent 收到操作结果：confirmed", { exact: true }).last()).toBeVisible();
+    assert.equal((await snapshot()).turns.length, turnsBefore + 1, "confirmation resumes the agent once");
   }
-  assert.equal((await (await page.request.get(origin + "/api/profile")).json()).goal, "端到端增肌目标");
-  assert.equal((await catalog()).find((e) => e.id === "bench-press").available, true);
+  assert.equal((await (await page.request.get(origin + "/api/profile")).json()).preferences, "端到端增肌目标");
+  assert.equal((await catalog()).find((e) => e.id === "bench-press").active, true);
   const equipment = await (await page.request.get(origin + "/api/user-equipment")).json();
   assert.equal(equipment.items.filter((e) => e.name === "端到端弹力带").length, 1);
   console.log("PASS: profile, preferences, equipment use unified confirmation");

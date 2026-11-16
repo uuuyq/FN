@@ -1,6 +1,7 @@
 """Catalog tools: exercise availability preferences and user equipment."""
-from ...models import Equipment
-from ...schemas import PreferenceBatch, EquipmentInput
+from ...models import Equipment, UserExercise, normalize_exercise_text
+from sqlalchemy import select
+from ...schemas import PreferenceBatch, EquipmentInput, ExerciseInput
 from ...services import exercise, version, fail
 from .registry import Tool, WriteSummary
 
@@ -71,3 +72,37 @@ ADD_EQUIPMENT = Tool(name='add_equipment',
     description='新增用户可用器械，包含名称和可选的公共器械引用 equipment_id，返回新增器械。',
     model=AddEquipment, kind='write', execution='user_confirmation', validate=validate_equipment, execute=execute_equipment,
     operation=lambda payload: 'add_equipment', summary=equipment_summary, details=equipment_details)
+
+
+class AddExercise(WriteSummary, ExerciseInput):
+    pass
+
+
+def validate_exercise(ctx, params):
+    existing = ctx.db.scalar(select(UserExercise.id).where(
+        UserExercise.user_id == ctx.user_id,
+        UserExercise.normalized_name == normalize_exercise_text(params.name)))
+    if existing:
+        fail(409, 'exercise_name_taken')
+
+
+def execute_exercise(ctx, params):
+    from ...modules.catalog.service import create_exercise, catalog_view
+    body = ExerciseInput.model_validate(params.model_dump(exclude={'summary'}))
+    row = create_exercise(ctx.db, ctx.user_id, body)
+    return {**catalog_view(ctx.db, row, ctx.user_id), 'summary': '已新增个人动作：' + row.name}
+
+
+def exercise_summary(ctx, payload):
+    return '新增个人动作：' + payload['name']
+
+
+def exercise_details(ctx, payload):
+    return {key: value for key, value in payload.items() if key != 'summary'}
+
+
+ADD_EXERCISE = Tool(name='add_exercise',
+    description='新增个人动作并默认加入选择动作。用户只要求新增动作时使用本工具。动作名称必填，其余字段可选。可根据用户提供的动作补充别名、肌群、器械和说明，全部内容交由用户在卡片中确认；动作有歧义时先澄清。返回新增动作，不创建训练记录。',
+    model=AddExercise, kind='write', execution='user_confirmation', validate=validate_exercise,
+    execute=execute_exercise, operation=lambda payload: 'add_exercise',
+    summary=exercise_summary, details=exercise_details)

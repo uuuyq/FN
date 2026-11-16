@@ -54,7 +54,10 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
     def equipment_values(db, body):
         if body.equipment_id and not db.get(Equipment, body.equipment_id):
             fail(404, 'equipment_not_found')
-        return body.model_dump(exclude={'version'})
+        values = body.model_dump(exclude={'version'})
+        if values['category'] is None:
+            values.pop('category')
+        return values
 
     @app.post('/api/user-equipment')
     def add_equipment(body: EquipmentInput, request: Request, x_request_id: RequestId, user_id=Depends(identity)):

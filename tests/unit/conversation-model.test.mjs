@@ -159,11 +159,17 @@ test("conversation timeline and retry eligibility", async (t) => {
     }
   });
 
-  await t.test("labels keep unknown values visible", () => {
+  await t.test("card labels use Chinese names and safe fallbacks", () => {
     assert.equal(operationName("delete_workout"), "删除训练");
-    assert.equal(operationName("future_operation"), "future_operation");
+    for (const [operation, label] of Object.entries({
+      add_exercise: "新增动作", add_equipment: "新增器械",
+      create_workout: "新增训练", update_workout: "修改训练", delete_workout: "删除训练",
+      update_profile: "修改个人条件", update_preferences: "修改动作偏好", undo_operation: "撤销操作",
+    })) assert.equal(operationName(operation), label);
+    assert.equal(operationName("future_operation"), "操作");
+    assert.equal(operationName(undefined), "操作");
     assert.equal(statusName("conflict"), "数据已变化");
-    assert.equal(statusName("mystery"), "mystery");
+    assert.equal(statusName("mystery"), "未知状态");
     assert.equal(statusName(undefined), "未知状态");
   });
 

@@ -1,4 +1,5 @@
 """Initial FitPlan schema with public/user catalogs and two-level training records."""
+from datetime import datetime, timezone
 from alembic import op
 import sqlalchemy as sa
 
@@ -8,7 +9,7 @@ branch_labels = None
 depends_on = None
 
 
-def upgrade():
+def create_initial_schema():
     op.create_table('equipment',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
@@ -214,7 +215,7 @@ def upgrade():
     op.create_index(op.f('ix_messages_turn_id'), 'messages', ['turn_id'], unique=False)
 
 
-def downgrade():
+def drop_initial_schema():
     op.drop_index(op.f('ix_messages_turn_id'), table_name='messages')
     op.drop_index(op.f('ix_messages_conversation_id'), table_name='messages')
     op.drop_table('messages')
@@ -245,3 +246,80 @@ def downgrade():
     op.drop_index('ix_public_exercises_name_id', table_name='public_exercises')
     op.drop_table('public_exercises')
     op.drop_table('equipment')
+
+
+def upgrade_operations():
+    op.create_table('agent_operations',
+        sa.Column('id', sa.String(), primary_key=True),
+        sa.Column('user_id', sa.String(), sa.ForeignKey('users.id'), nullable=False),
+        sa.Column('workout_id', sa.String(), nullable=False),
+        sa.Column('action_id', sa.String(), sa.ForeignKey('conversation_actions.id'), nullable=False, unique=True),
+        sa.Column('operation', sa.String(), nullable=False),
+        sa.Column('summary', sa.Text(), nullable=False),
+        sa.Column('before', sa.JSON(), nullable=True),
+        sa.Column('after_version', sa.Integer(), nullable=False),
+        sa.Column('created_at', sa.String(), nullable=False),
+        sa.Column('undone_at', sa.String(), nullable=True),
+        sa.Column('undo_action_id', sa.String(), nullable=True),
+        sa.Column('undo_result', sa.JSON(), nullable=True))
+    op.create_index('ix_agent_operations_user_id', 'agent_operations', ['user_id'])
+    op.create_index('ix_agent_operations_created_at', 'agent_operations', ['created_at'])
+
+
+def downgrade_operations():
+    op.drop_table('agent_operations')
+
+
+def upgrade_profile():
+    db = op.get_bind()
+    users = sa.table('users', sa.column('id', sa.String), sa.column('profile', sa.JSON),
+                     sa.column('profile_version', sa.Integer))
+    for row in db.execute(sa.select(users)).mappings():
+        profile = dict(row['profile'] or {})
+        parts = [profile.get('preferences', '')]
+        for key, label in (('goal', '训练目标'), ('restrictions', '限制')):
+            value = profile.pop(key, '')
+            if value:
+                parts.append(label + '：' + value)
+        profile['preferences'] = '\n'.join(part for part in parts if part)
+        profile.setdefault('training_principles', '')
+        profile.setdefault('history_workout_count', 7)
+        db.execute(users.update().where(users.c.id == row['id']).values(
+            profile=profile, profile_version=row['profile_version'] + 1))
+    actions = sa.table('conversation_actions', sa.column('tool_name', sa.String),
+        sa.column('status', sa.String), sa.column('version', sa.Integer),
+        sa.column('completed_at', sa.String), sa.column('summary', sa.Text))
+    db.execute(actions.update().where(actions.c.tool_name == 'update_profile',
+        actions.c.status == 'pending').values(status='superseded', version=actions.c.version + 1,
+        completed_at=datetime.now(timezone.utc).isoformat(), summary='个人条件字段已更新，请重新发起修改。'))
+
+
+def downgrade_profile():
+    # Keep user-authored preferences intact when reverting the application.
+    pass
+
+
+def upgrade_categories():
+    for table in ('equipment', 'user_equipment'):
+        op.add_column(table, sa.Column('category', sa.String(), nullable=False, server_default='其他'))
+    db = op.get_bind()
+    categories = {'barbell': '自由重量', 'dumbbell': '自由重量', 'kettlebell': '自由重量', 'ez-bar': '自由重量', 'trap-bar': '自由重量', 'plates': '自由重量', 'smith': '固定器械', 'cable': '固定器械', 'lat-pulldown': '固定器械', 'seated-row': '固定器械', 'chest-press': '固定器械', 'pec-deck': '固定器械', 'shoulder-press': '固定器械', 'leg-press': '固定器械', 'hack-squat': '固定器械', 'leg-extension': '固定器械', 'leg-curl': '固定器械', 'hip-thrust': '固定器械', 'hip-abduction': '固定器械', 'hip-adduction': '固定器械', 'calf-raise': '固定器械', 'assisted-pullup': '固定器械', 'bench': '训练架与凳', 'pullup': '训练架与凳', 'rack': '训练架与凳', 'dip-bars': '训练架与凳', 'roman-chair': '训练架与凳', 'preacher-bench': '训练架与凳', 'treadmill': '有氧器械', 'bike': '有氧器械', 'air-bike': '有氧器械', 'rower': '有氧器械', 'elliptical': '有氧器械', 'stair-climber': '有氧器械', 'ski-erg': '有氧器械', 'band': '功能训练', 'mini-band': '功能训练', 'trx': '功能训练', 'gym-rings': '功能训练', 'stability-ball': '功能训练', 'medicine-ball': '功能训练', 'slam-ball': '功能训练', 'bosu': '功能训练', 'ab-wheel': '功能训练', 'box': '功能训练', 'step': '功能训练', 'rope': '功能训练', 'battle-rope': '功能训练', 'sled': '功能训练', 'sandbag': '功能训练', 'mat': '辅助与恢复', 'foam-roller': '辅助与恢复'}
+    for equipment_id, category in categories.items():
+        db.execute(sa.text('UPDATE equipment SET category = :category WHERE id = :id'), {'category': category, 'id': equipment_id})
+    db.execute(sa.text('UPDATE user_equipment SET category = (SELECT category FROM equipment WHERE equipment.id = user_equipment.equipment_id) WHERE equipment_id IS NOT NULL'))
+
+
+def downgrade_categories():
+    op.drop_column('user_equipment', 'category')
+    op.drop_column('equipment', 'category')
+
+
+def upgrade():
+    create_initial_schema()
+    upgrade_operations()
+    upgrade_categories()
+
+
+def downgrade():
+    downgrade_operations()
+    drop_initial_schema()

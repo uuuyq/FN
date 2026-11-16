@@ -122,6 +122,17 @@ test("request error handling", async (t) => {
       /未知异常/,
     );
   });
+  await t.test("SSE decodes byte-split Chinese and CRLF frames", async () => {
+    const bytes = new TextEncoder().encode('event: accepted\r\ndata: {"turn_id":"t"}\r\n\r\nevent: text_delta\r\ndata: {"text":"你好"}\r\n\r\nevent: completed\r\ndata: {"id":"t","status":"succeeded"}\r\n\r\n');
+    mock(async () => new Response(new ReadableStream({start(controller) {
+      for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+      controller.close();
+    }})));
+    const events = [];
+    const result = await conversationStream("/test", "GET", null, "request-id", () => {}, ({event, payload}) => events.push([event, payload]));
+    assert.equal(events[0][1].text, "你好");
+    assert.equal(result.status, "succeeded");
+  });
   assert.equal(getErrorMessage(new Error("请先选择任务")), "请先选择任务");
   assert.equal(getErrorMessage({}), "未知异常，请稍后重试。");
   assert.equal(

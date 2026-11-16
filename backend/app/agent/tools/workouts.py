@@ -271,7 +271,7 @@ GET_WORKOUT = Tool(name='get_workout',
     model=GetWorkout, kind='read', execution='direct', execute=get_workout)
 
 SAVE_WORKOUT = Tool(name='save_workout',
-    description='新增或完整替换一条训练记录。修改使用记录 ID 和版本进行并发校验。支持同时创建个人动作，返回记录 ID、版本和摘要。',
+    description='记录用户实际完成的训练，新增或完整替换一条训练记录。仅新增动作使用 add_exercise。修改使用记录 ID 和版本进行并发校验。支持同时创建个人动作，返回记录 ID、版本和摘要。',
     model=SaveWorkout, kind='write', execution='user_confirmation', validate=validate_save, execute=execute_save,
     operation=save_operation, summary=save_summary, details=save_details)
 

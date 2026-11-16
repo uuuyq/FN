@@ -28,7 +28,9 @@ def message_view(row):
     return {'id': row.id, 'turn_id': row.turn_id, 'role': row.role, 'content': row.content,
             'tool_calls': row.tool_calls, 'tool_call_id': row.tool_call_id,
             'sequence': row.sequence, 'event_kind': row.event_kind,
-            'event_data': row.event_data, 'created_at': row.created_at}
+            'event_data': ({key: value for key, value in row.event_data.items()
+                            if key != 'reasoning_content'} if row.event_data else row.event_data),
+            'created_at': row.created_at}
 
 
 def repair_partial_tool_calls(db, conversation_id):

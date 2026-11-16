@@ -1,20 +1,20 @@
 param([switch]$Background, [switch]$Prepare, [switch]$Build)
 $ErrorActionPreference = 'Stop'
+try {
+    $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
+    if ($health.status -eq 'ok') { Write-Host 'FitPlan is already running: http://127.0.0.1:8765'; exit 0 }
+} catch {}
 if (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue) {
-    try {
-        $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
-        if ($health.status -eq 'ok') { Write-Host 'FitPlan is already running: http://127.0.0.1:8765'; exit 0 }
-    } catch {}
     throw 'Port 8765 is occupied by another process; stop it or run deploy/stop-local.ps1 first'
 }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonOutput = & conda run -n fitplan python -c 'import sys; print(sys.executable)'
 if ($LASTEXITCODE -ne 0) { throw 'Conda fitplan environment is unavailable' }
 $python = ($pythonOutput | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
-if ($Build) {
+if ($Build -or !(Test-Path -LiteralPath (Join-Path $projectRoot 'frontend/dist/index.html'))) {
     Push-Location (Join-Path $projectRoot 'frontend')
     try {
-        & node node_modules/typescript/bin/tsc -b
+        & node node_modules/typescript/bin/tsc --noEmit
         if ($LASTEXITCODE -ne 0) { throw 'TypeScript failed' }
         & node node_modules/vite/bin/vite.js build
         if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
@@ -22,12 +22,37 @@ if ($Build) {
 }
 Push-Location (Join-Path $projectRoot 'backend')
 try {
+    if (!$Prepare) {
+        $checkDatabase = @'
+from pathlib import Path
+import sqlite3
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+path = Path('data/fitplan.db')
+if not path.exists():
+    raise SystemExit(10)
+with sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True) as db:
+    revision = db.execute('SELECT version_num FROM alembic_version').fetchone()[0]
+raise SystemExit(0 if revision == ScriptDirectory.from_config(Config('alembic.ini')).get_current_head() else 10)
+'@
+        & $python -c $checkDatabase
+        if ($LASTEXITCODE -eq 10) {
+            Write-Host 'Preparing database for the current application version'
+            $Prepare = $true
+        } elseif ($LASTEXITCODE -ne 0) {
+            throw 'Database version check failed'
+        }
+    }
     if ($Prepare) {
         & $python -m scripts.local prepare
         if ($LASTEXITCODE -ne 0) { throw 'Database preparation failed' }
     }
-    & (Join-Path $PSScriptRoot 'register-workout-cleanup.ps1') -Python $python | Out-Null
-    Write-Host 'Workout cleanup task registered: daily 03:00'
+    try {
+        & (Join-Path $PSScriptRoot 'register-workout-cleanup.ps1') -Python $python | Out-Null
+        Write-Host 'Workout cleanup task registered: daily 03:00'
+    } catch {
+        Write-Warning ('Workout cleanup task registration failed: ' + $_.Exception.Message)
+    }
     if ($Background) {
         $runtime = Join-Path $projectRoot 'runtime'
         New-Item -ItemType Directory -Path $runtime -Force | Out-Null
@@ -43,7 +68,11 @@ try {
         for ($attempt=0; $attempt -lt 40; $attempt++) {
             Start-Sleep -Milliseconds 250
             $process.Refresh()
-            if ($process.HasExited) { throw 'Server exited; check runtime/server-error.log' }
+            if ($process.HasExited) {
+                Remove-Item -LiteralPath $stateFile -ErrorAction SilentlyContinue
+                Get-Content -LiteralPath (Join-Path $runtime 'server-error.log') -Tail 30
+                throw 'Server exited; check runtime/server-error.log'
+            }
             try {
                 $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 1
                 if ($health.status -eq 'ok') { $ready=$true; break }

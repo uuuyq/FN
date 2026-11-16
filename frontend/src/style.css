@@ -934,3 +934,8 @@ button:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+.thinking-status { color: #777; padding: 8px 0; animation: thinking-pulse 1.6s ease-in-out infinite; }
+@keyframes thinking-pulse { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { .thinking-status { animation: none; } }
+.equipment-row .ant-select { min-width: 130px; }
