@@ -29,26 +29,31 @@ def get_preference(db, user_id, row):
 
 
 def exercise_query(user_id, *, active=None, q='', exercise_id=None):
-    """Return a composable union with one joined preference per exercise."""
+    """Return a composable union with one joined preference per exercise.
+
+    Exercises without a preference row default to active for every user;
+    only an explicit preference decides otherwise.
+    """
     pref = UserExercisePreference
     branches = []
     for model, target in ((PublicExercise, pref.public_exercise_id),
                           (UserExercise, pref.user_exercise_id)):
         owner = literal(None) if model is PublicExercise else model.user_id
+        category = literal(None) if model is PublicExercise else model.category
         stmt = select(
             model.id.label('id'), model.name.label('name'), model.aliases, model.primary_muscles,
             model.secondary_muscles, model.equipment, model.description,
-            model.version, owner.label('owner_id'),
-            func.coalesce(pref.active, False).label('active'),
+            model.version, owner.label('owner_id'), category.label('category'),
+            func.coalesce(pref.active, True).label('active'),
             func.coalesce(pref.version, 1).label('preference_version'),
         ).select_from(model).join(pref, and_(
-            target == model.id, pref.user_id == user_id), isouter=active is not True)
+            target == model.id, pref.user_id == user_id), isouter=True)
         if model is UserExercise:
             stmt = stmt.where(model.user_id == user_id)
         if active is True:
-            stmt = stmt.where(pref.active.is_(True))
+            stmt = stmt.where(func.coalesce(pref.active, True))
         elif active is False:
-            stmt = stmt.where(func.coalesce(pref.active, False).is_(False))
+            stmt = stmt.where(func.coalesce(pref.active, True).is_(False))
         if q:
             stmt = stmt.where(model.search_text.contains(normalize_exercise_text(q), autoescape=True))
         if exercise_id is not None:

@@ -21,6 +21,7 @@ MESSAGES = {
     "exercise_name_taken": "已有同名动作，请选择已有动作或修改名称。",
     "duplicate_exercise": "存在重复动作，请检查后再保存。",
     "shared_exercise_readonly": "共享动作不能修改，请创建自定义动作。",
+    "exercise_in_use": "该动作已被训练记录使用，无法删除。",
     "custom_exercise_confirmation_required": "请先确认创建自定义动作。",
     "context_too_large": "对话内容过长，请精简内容或开始新对话。",
     "read_only_turn": "仅查询模式无法修改待确认内容，请切换模式后重新发送",

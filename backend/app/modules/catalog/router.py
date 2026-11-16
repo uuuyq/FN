@@ -4,7 +4,8 @@ from fastapi import Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...models import Equipment, UserEquipment
+from ...models import (Equipment, UserEquipment, UserExercise,
+                        UserExercisePreference, WorkoutSet)
 from ...schemas import ExerciseInput, ExerciseUpdate, Version, PreferenceBatch, EquipmentInput, EquipmentUpdate
 from ...services import fail, version, owned, serialize
 from . import service
@@ -34,6 +35,24 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
     def update_exercise(object_id: str, body: ExerciseUpdate, request: Request, x_request_id: RequestId, user_id=Depends(identity)):
         def action(db):
             return service.catalog_view(db, service.update_exercise(db, user_id, object_id, body), user_id)
+        return mutate(request, user_id, x_request_id, body, action)
+
+    @app.delete('/api/exercises/{object_id}')
+    def delete_exercise(object_id: str, body: Version, request: Request, x_request_id: RequestId, user_id=Depends(identity)):
+        def action(db):
+            row = owned(db, UserExercise, object_id, user_id)
+            version(row, body.version)
+            if db.scalar(select(WorkoutSet.id).where(WorkoutSet.user_exercise_id == object_id).limit(1)):
+                fail(409, 'exercise_in_use')
+            preference = db.scalar(select(UserExercisePreference)
+                                   .where(UserExercisePreference.user_exercise_id == object_id))
+            if preference:
+                db.delete(preference)
+                # No ORM relationship between the tables: flush first so the
+                # child row is gone before the exercise itself.
+                db.flush()
+            db.delete(row)
+            return {'removed': True}
         return mutate(request, user_id, x_request_id, body, action)
 
     @app.put('/api/exercise-preferences')

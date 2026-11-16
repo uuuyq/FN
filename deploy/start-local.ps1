@@ -1,4 +1,4 @@
-param([switch]$Background, [switch]$Prepare, [switch]$Build)
+param([switch]$Background, [switch]$Prepare, [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
 try {
     $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
@@ -11,12 +11,19 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $pythonOutput = & conda run -n fitplan python -c 'import sys; print(sys.executable)'
 if ($LASTEXITCODE -ne 0) { throw 'Conda fitplan environment is unavailable' }
 $python = ($pythonOutput | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
-if ($Build -or !(Test-Path -LiteralPath (Join-Path $projectRoot 'frontend/dist/index.html'))) {
+$node = (Get-Command node -ErrorAction SilentlyContinue).Source
+if (!$node) {
+    foreach ($candidate in @('C:\Program Files\nodejs\node.exe', "$env:LOCALAPPDATA\Programs\nodejs\node.exe", "$env:ProgramFiles\nodejs\node.exe")) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { $node = $candidate; break }
+    }
+}
+if (!$node) { throw 'Node.js not found; install it or add node.exe to PATH' }
+if (!$NoBuild -or !(Test-Path -LiteralPath (Join-Path $projectRoot 'frontend/dist/index.html'))) {
     Push-Location (Join-Path $projectRoot 'frontend')
     try {
-        & node node_modules/typescript/bin/tsc --noEmit
+        & $node node_modules/typescript/bin/tsc --noEmit
         if ($LASTEXITCODE -ne 0) { throw 'TypeScript failed' }
-        & node node_modules/vite/bin/vite.js build
+        & $node node_modules/vite/bin/vite.js build
         if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
     } finally { Pop-Location }
 }

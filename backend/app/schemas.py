@@ -61,6 +61,8 @@ class AiConfigSave(AiConfigTest, Version):
 
 Name = Annotated[str, Field(min_length=1, max_length=100)]
 
+Category = Literal['胸部', '背部', '肩部', '手臂', '腿臀', '核心', '有氧与全身', '其他']
+
 
 class ExerciseInput(Schema):
     name: Name
@@ -69,6 +71,7 @@ class ExerciseInput(Schema):
     secondary_muscles: str = Field(default='', max_length=2000)
     equipment: str = Field(default='', max_length=2000)
     description: str = Field(default='', max_length=4000)
+    category: Category = '其他'
 
 
 class ExerciseUpdate(ExerciseInput, Version):

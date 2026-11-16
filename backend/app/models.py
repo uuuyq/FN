@@ -61,6 +61,7 @@ class PublicExercise(ExerciseFields, Base):
 class UserExercise(ExerciseFields, Base):
     __tablename__ = 'user_exercises'
     user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    category: Mapped[str] = mapped_column(String(20), default='其他', server_default='其他')
     __table_args__ = (UniqueConstraint('user_id', 'normalized_name'),
                       Index('ix_user_exercises_user_name_id', 'user_id', 'name', 'id'))
 

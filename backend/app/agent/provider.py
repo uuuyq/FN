@@ -15,6 +15,10 @@ from pydantic import ValidationError
 
 from .contracts import ModelReply, ToolCallRequest
 
+# Guard against runaway streams, not normal output. SSE framing averages ~300
+# bytes per token (measured), so a full 16k-token budget streams ~5 MB.
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
 
 class ProviderError(Exception):
     def __init__(self, code):
@@ -127,7 +131,7 @@ class Provider:
                             ended = False
                             async for line in response.aiter_lines():
                                 size += len(line.encode('utf-8'))
-                                if size > 1048576:
+                                if size > MAX_RESPONSE_BYTES:
                                     raise ProviderError('model_response_too_large')
                                 if line.startswith('data:'):
                                     fields.append(line[5:].lstrip())
@@ -168,7 +172,7 @@ class Provider:
                             chunks, size = [], 0
                             async for chunk in response.aiter_bytes():
                                 size += len(chunk)
-                                if size > 1048576:
+                                if size > MAX_RESPONSE_BYTES:
                                     raise ProviderError('model_response_too_large')
                                 chunks.append(chunk)
                             data = json.loads(b''.join(chunks))
