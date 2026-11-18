@@ -13,7 +13,7 @@ def test_calendar_complete_month_and_isolation(env):
         db.commit()
     result=a.get('/api/workouts/calendar?month=2026-01').json()
     assert result['training_days']==1
-    assert result['days']==[{'date':'2026-01-02','count':206}]
+    assert result['days']==[{'date':'2026-01-02','count':206,'parts':['胸']}]
     assert b.get('/api/workouts/calendar?month=2026-01').json()['days']==[]
     assert a.get('/api/workouts/calendar?month=2026-13').status_code==422
     assert a.get('/api/workouts/calendar?month=2024-02').status_code==200

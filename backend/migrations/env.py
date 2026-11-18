@@ -22,8 +22,9 @@ with engine.connect() as connection:
             inspector = inspect(connection)
             if inspector.has_table('alembic_version'):
                 revision = connection.execute(text('SELECT version_num FROM alembic_version')).scalar()
-                if revision in ('0001', '0002', '0003', '0004') and inspector.has_table('equipment'):
+                if revision in ('0001', '0002', '0003', '0004', '0005') and inspector.has_table('equipment'):
                     has_category = any(column['name'] == 'category' for column in inspector.get_columns('equipment'))
+                    user_has_category = any(column['name'] == 'category' for column in inspector.get_columns('user_exercises'))
                     initial = ScriptDirectory.from_config(config).get_revision('0001').module
                     with Operations.context(MigrationContext.configure(connection)):
                         if not inspector.has_table('agent_operations'):
@@ -32,6 +33,9 @@ with engine.connect() as connection:
                             initial.upgrade_profile()
                         if not has_category:
                             initial.upgrade_categories()
+                        if not user_has_category:
+                            initial.upgrade_user_category()
+                        initial.upgrade_training_parts()
                     connection.execute(text("UPDATE alembic_version SET version_num = '0001'"))
             with context.begin_transaction():
                 context.run_migrations()

@@ -42,7 +42,7 @@ def exercise_query(user_id, *, active=None, q='', exercise_id=None):
         category = literal(None) if model is PublicExercise else model.category
         stmt = select(
             model.id.label('id'), model.name.label('name'), model.aliases, model.primary_muscles,
-            model.secondary_muscles, model.equipment, model.description,
+            model.training_parts, model.secondary_muscles, model.equipment, model.description,
             model.version, owner.label('owner_id'), category.label('category'),
             func.coalesce(pref.active, True).label('active'),
             func.coalesce(pref.version, 1).label('preference_version'),
@@ -86,6 +86,7 @@ def catalog_view(db, row, user_id):
 
 def create_exercise(db, user_id, body):
     values = body.model_dump()
+    values['training_parts'] = list(dict.fromkeys(values['training_parts']))
     normalized = normalize_exercise_text(values['name'])
     if db.scalar(select(UserExercise.id).where(
             UserExercise.user_id == user_id, UserExercise.normalized_name == normalized)):
@@ -109,6 +110,10 @@ def update_exercise(db, user_id, exercise_id, body):
             UserExercise.id != row.id)):
         fail(409, 'exercise_name_taken')
     for key, value in body.model_dump(exclude={'version'}).items():
+        if key == 'training_parts':
+            if key not in body.model_fields_set:
+                continue
+            value = list(dict.fromkeys(value))
         setattr(row, key, value)
     row.version += 1
     db.flush()

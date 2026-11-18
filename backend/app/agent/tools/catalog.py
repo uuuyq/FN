@@ -102,7 +102,7 @@ def exercise_details(ctx, payload):
 
 
 ADD_EXERCISE = Tool(name='add_exercise',
-    description='新增个人动作并默认加入选择动作。用户只要求新增动作时使用本工具。动作名称必填，其余字段可选。可根据用户提供的动作补充别名、肌群、器械和说明，全部内容交由用户在卡片中确认；动作有歧义时先澄清。返回新增动作，不创建训练记录。',
+    description='新增个人动作并默认加入选择动作。用户只要求新增动作时使用本工具。动作名称必填，training_parts 为训练部位数组，可选胸、背、腿、二头、三头、肩、腹。根据明确动作提供分类，不明确时先询问，分类随卡片确认。其余字段可选。可根据用户提供的动作补充别名、肌群、器械和说明，全部内容交由用户在卡片中确认；动作有歧义时先澄清。返回新增动作，不创建训练记录。',
     model=AddExercise, kind='write', execution='user_confirmation', validate=validate_exercise,
     execute=execute_exercise, operation=lambda payload: 'add_exercise',
     summary=exercise_summary, details=exercise_details)

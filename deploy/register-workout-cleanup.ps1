@@ -21,6 +21,6 @@ $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 if ($existing -and ($existing.Actions.WorkingDirectory -ne $backend)) {
     throw 'An unrelated task uses this name; refusing to overwrite it'
 }
-Register-ScheduledTask -ErrorAction Stop -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Purge FitPlan workouts deleted for at least seven days. Logs: runtime/workout-cleanup.log' -Force | Out-Null
+Register-ScheduledTask -ErrorAction Stop -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Purge FNote workouts deleted for at least seven days. Logs: runtime/workout-cleanup.log' -Force | Out-Null
 Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State
 Get-ScheduledTaskInfo -TaskName $taskName | Select-Object NextRunTime, LastTaskResult

@@ -1,3 +1,4 @@
+import { TrainingParts, trainingParts } from "./TrainingParts";
 import { getErrorMessage } from "./errors";
 import { useEffect, useState } from "react";
 import { Alert, Button, Card, Modal, Space } from "antd";
@@ -16,7 +17,7 @@ export function TrainingCalendar({
   const [origin, setOrigin] = useState({ x: 0, y: 0 });
   const [loading, setLoading] = useState(false);
   const [month, setMonth] = useState(today.slice(0, 7));
-  const [days, setDays] = useState<{ date: string; count: number }[]>([]);
+  const [days, setDays] = useState<{ date: string; count: number; parts: string[] }[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [records, setRecords] = useState<Workout[]>([]);
   const [error, setError] = useState("");
@@ -74,7 +75,7 @@ export function TrainingCalendar({
     setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   };
   return (
-    <section className="calendar-card" aria-label="训练日历">
+    <section id="training-calendar" className="calendar-card" aria-label="训练日历">
       <div className="calendar-heading">
         <div>
           <h2>
@@ -104,12 +105,14 @@ export function TrainingCalendar({
         ))}
         {Array.from({ length: count }, (_, i) => {
           const date = `${month}-${String(i + 1).padStart(2, "0")}`;
-          const n = days.find((d) => d.date === date)?.count || 0;
+          const day = days.find((d) => d.date === date);
+          const n = day?.count || 0;
+          const parts = trainingParts.filter(part => day?.parts?.includes(part));
           return (
             <button
               key={date}
               className={`calendar-day ${n ? "trained" : ""} ${date === today ? "today" : ""} ${date === selected ? "selected" : ""}`}
-              aria-label={`${date} ${n ? `${n}条训练` : "没有记录"}`}
+              aria-label={`${date} ${n ? `已训练 ${parts.join("、")}` : "没有记录"}`}
               onClick={(event) => {
                 const rect = event.currentTarget.getBoundingClientRect();
                 setOrigin({
@@ -120,12 +123,14 @@ export function TrainingCalendar({
               }}
             >
               <span>{i + 1}</span>
-              {n > 0 && <small>● {n} 条</small>}
+              {parts.length > 0 && <span className={`calendar-parts-preview ${parts.length > 2 ? "is-stacked" : ""} ${parts.length > 1 ? "has-multiple" : ""}`}>
+                <TrainingParts parts={parts.slice(0, 2)} />
+              </span>}
             </button>
           );
         })}
       </div>
-      <p className="calendar-legend">● 已记录训练 · 点击日期查看或补录</p>
+      <p className="calendar-legend">部位按当天训练动作汇总 · 点击日期查看或补录</p>
       <Modal
         title="删除这条训练记录？"
         open={!!deleting}
@@ -175,6 +180,7 @@ export function TrainingCalendar({
           </div>
         )}
       >
+        <div className="date-training-parts"><TrainingParts parts={days.find(day => day.date === selected)?.parts || []} /></div>
         <Button
           type="primary"
           onClick={() => {
@@ -204,6 +210,7 @@ export function TrainingCalendar({
                       <th>类型</th>
                       <th>重量 (kg)</th>
                       <th>次数</th>
+                      <th>备注</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -213,6 +220,7 @@ export function TrainingCalendar({
                         <td>{set.kind === "warmup" ? "热身" : "正式"}</td>
                         <td>{set.weight_kg ?? ""}</td>
                         <td>{set.reps ?? ""}</td>
+                        <td>{set.notes}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -36,16 +36,22 @@ export function Conversation({
   owner,
   onSend,
   onLock,
+  onNearBottomChange,
   refresh,
   names,
   newChatSignal,
+  onboarding = false,
+  guideSignal = 0,
 }: {
   owner: string;
   onSend?: () => void;
   onLock: (locked: boolean) => void;
+  onNearBottomChange?: (nearBottom: boolean) => void;
   refresh: () => Promise<void>;
   names: Record<string, string>;
   newChatSignal?: number;
+  onboarding?: boolean;
+  guideSignal?: number;
 }) {
   const [drafts, setDrafts] = useState<{ message_id: string; text: string }[]>(
     [],
@@ -54,6 +60,7 @@ export function Conversation({
   const [sentDraft, setSentDraft] = useState("");
   const streamController = useRef<AbortController | null>(null);
   const streamGeneration = useRef(0);
+  const resumingAcceptedTurn = useRef(false);
   useEffect(() => () => streamController.current?.abort(), []);
   const [deleting, setDeleting] = useState<{
     id: string;
@@ -70,11 +77,36 @@ export function Conversation({
   const [items, setItems] = useState<{ id: string; title: string }[]>([]);
   const [id, setIdState] = useState<string | null>(null),
     [data, setData] = useState<Snapshot | null>(null);
-  const [text, setText] = useState("");
+  const starterQuestion = "你有哪些功能？我该怎么开始记录训练或生成训练计划？";
+  const [text, setText] = useState(onboarding ? starterQuestion : "");
+  const [guideOpen, setGuideOpen] = useState(onboarding);
+  const [guideError, setGuideError] = useState("");
+  const guideDismissed = useRef(!onboarding);
+  const previousGuideSignal = useRef(guideSignal);
+  useEffect(() => {
+    if (guideSignal === previousGuideSignal.current) return;
+    previousGuideSignal.current = guideSignal;
+    setGuideOpen(true);
+    setText(current => current.trim() ? current : starterQuestion);
+    controls.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [guideSignal]);
+  async function dismissGuide() {
+    setGuideOpen(false);
+    if (guideDismissed.current) return;
+    try {
+      await api("/auth/onboarding/dismiss", "POST", {});
+      guideDismissed.current = true;
+      setGuideError("");
+    } catch (e) {
+      setGuideError(getErrorMessage(e));
+    }
+  }
   const [hasStreamText, setHasStreamText] = useState(false);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
+  const [sendError, setSendError] = useState(false);
+  const retryText = useRef("");
   const [online, setOnline] = useState<any>(null);
   // Button request in flight; one X-Request-ID per action and kind is reused
   // across retries so a repeated click never duplicates the write.
@@ -90,11 +122,10 @@ export function Conversation({
   const previousSignal = useRef(newChatSignal);
   const nearBottom = useRef(true);
   const end = useRef<HTMLDivElement>(null);
-  const [newReply, setNewReply] = useState(false);
+  const [showScrollToEnd, setShowScrollToEnd] = useState(false);
   const controls = useRef<HTMLDivElement>(null);
   const scrollToEnd = () => {
     nearBottom.current = true;
-    setNewReply(false);
     requestAnimationFrame(() =>
       end.current?.scrollIntoView({
         block: "end",
@@ -138,10 +169,20 @@ export function Conversation({
       nearBottom.current =
         window.innerHeight + window.scrollY >=
         document.documentElement.scrollHeight - 160;
+      setShowScrollToEnd(!nearBottom.current);
+      onNearBottomChange?.(nearBottom.current);
     };
+    const observer = new ResizeObserver(check);
+    observer.observe(document.body);
     window.addEventListener("scroll", check, { passive: true });
-    return () => window.removeEventListener("scroll", check);
-  }, []);
+    window.addEventListener("resize", check);
+    check();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", check);
+      window.removeEventListener("resize", check);
+    };
+  }, [onNearBottomChange]);
   useEffect(() => {
     if (!data?.messages.length && !drafts.length && !sentDraft) return;
     if (nearBottom.current)
@@ -151,7 +192,6 @@ export function Conversation({
           ? "instant"
           : "smooth",
       });
-    else setNewReply(true);
   }, [data?.messages.length, drafts, sentDraft]);
   const storage = "fitplan-conversation-" + owner;
   const turnKey = "fitplan-turn-" + owner;
@@ -165,6 +205,7 @@ export function Conversation({
     setWorking(null);
     setText("");
     setError("");
+    setSendError(false);
     setNotice("");
     setHistoryOpen(false);
     pending.current = null;
@@ -221,6 +262,7 @@ export function Conversation({
     setWorking(null);
     setHistoryOpen(false);
     pending.current = null;
+    setSendError(false);
     onLock(false);
     void api("/ai/status")
       .then((value) => {
@@ -287,6 +329,7 @@ export function Conversation({
     setWorking(null);
     onLock(p.mode === "edit");
     setError("");
+    setSendError(false);
     try {
       const result: Turn = await conversationStream(
         p.turnId && method === "GET" ? `/turns/${p.turnId}/events` : p.path,
@@ -347,10 +390,8 @@ export function Conversation({
           "本轮未完成：" +
             getErrorMessage(new Error(result.error_message || "")) +
             "。" +
-            (hint || "输入和对话信息均保留。"),
+            (hint || "对话信息已保留。"),
         );
-      } else {
-        setText((current) => (current === p.sentText ? "" : current));
       }
       pending.current = null;
       localStorage.removeItem(turnKey);
@@ -358,8 +399,10 @@ export function Conversation({
     } catch (e) {
       if (!valid()) return;
       flush();
-      if (alive.current)
-        setError(getErrorMessage(e) + "。请恢复轮次；不会自动重新调用模型。");
+      if (alive.current) {
+        retryText.current = p.sentText || retryText.current;
+        setSendError(true);
+      }
       if (e instanceof ApiError && e.status >= 400 && e.status < 500)
         pending.current = null;
       // If accepted was received, keep the input locked until recovery establishes a terminal state.
@@ -372,16 +415,20 @@ export function Conversation({
       }
     }
   };
-  const send = async () => {
+  const sendText = async (value: string) => {
+    if (guideOpen) void dismissGuide();
     scrollToEnd();
     onSend?.();
     setError("");
+    setSendError(false);
     setBusy(true);
+    // Clear the composer as soon as the text is captured for sending.
+    setText("");
     try {
       let target = idRef.current;
       if (!target) {
         const created = await api<{ id: string }>("/conversations", "POST", {
-          title: text.slice(0, 30) || "训练对话",
+          title: value.slice(0, 30) || "训练对话",
         });
         target = created.id;
         setId(target);
@@ -391,20 +438,38 @@ export function Conversation({
       const p: Pending = {
         path: `/conversations/${target}/messages`,
         body: {
-          text,
+          text: value,
           mode: "edit",
         },
         requestId: crypto.randomUUID(),
         mode: "edit",
-        sentText: text,
+        sentText: value,
       };
       pending.current = p;
       await observe(p, "POST", target);
     } catch (e) {
-      setError(getErrorMessage(e));
+      retryText.current = value;
+      setSendError(true);
+      // The send never reached a durable turn; put the draft back.
+      setText((current) => (current.trim() ? current : value));
     } finally {
       setBusy(false);
     }
+  };
+  const send = () => {
+    if (!text.trim()) return;
+    void sendText(text);
+  };
+  // Failure under the latest user message: resume the accepted turn, or resend
+  // the text when the request never reached a durable turn.
+  const retrySend = async () => {
+    const p = pending.current;
+    if (p && idRef.current) {
+      await observe(p, p.turnId ? "GET" : "POST", idRef.current);
+      return;
+    }
+    const value = retryText.current;
+    if (value?.trim()) await sendText(value);
   };
   const recover = async () => {
     const p = pending.current;
@@ -415,6 +480,22 @@ export function Conversation({
       onLock(false);
     }
   };
+  useEffect(() => {
+    const resumeAcceptedTurn = () => {
+      if (document.visibilityState !== "visible" || busy || resumingAcceptedTurn.current ||
+          !pending.current?.turnId || !idRef.current) return;
+      resumingAcceptedTurn.current = true;
+      void observe(pending.current, "GET", idRef.current)
+        .catch(() => {})
+        .finally(() => { resumingAcceptedTurn.current = false; });
+    };
+    document.addEventListener("visibilitychange", resumeAcceptedTurn);
+    window.addEventListener("online", resumeAcceptedTurn);
+    return () => {
+      document.removeEventListener("visibilitychange", resumeAcceptedTurn);
+      window.removeEventListener("online", resumeAcceptedTurn);
+    };
+  });
   // Decisions return their durable model continuation, including execution failures.
   const decide = async (requested: Action, kind: "confirm" | "cancel") => {
     const conversationId = idRef.current;
@@ -434,6 +515,7 @@ export function Conversation({
     }
     setError("");
     setNotice("");
+    setSendError(false);
     setWorking({ actionId: action.action_id, kind });
     try {
       const updated = await api<Action>(
@@ -488,6 +570,7 @@ export function Conversation({
   const safe = async (fn: () => Promise<void>) => {
     try {
       setError("");
+      setSendError(false);
       await fn();
     } catch (e) {
       setError(getErrorMessage(e));
@@ -496,6 +579,22 @@ export function Conversation({
   const timeline = data ? buildTimeline(data) : [];
   const lastTurn = data?.turns[data.turns.length - 1];
   const retryable = lastTurn && canRetry(lastTurn, data!) ? lastTurn : null;
+  let lastUserId: string | undefined;
+  for (const item of timeline)
+    if (item.kind !== "card" && item.message.role === "user")
+      lastUserId = item.message.id;
+  const retryControl = sendError ? (
+    <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
+      <Typography.Text type="danger">未知异常</Typography.Text>
+      <Button
+        size="small"
+        disabled={busy || !!working}
+        onClick={() => void retrySend()}
+      >
+        重试
+      </Button>
+    </div>
+  ) : null;
   const requestInFlight = busy || !!pending.current || !!working;
   return (
     <Space direction="vertical" style={{ width: "100%" }} size="middle">
@@ -541,16 +640,24 @@ export function Conversation({
               ) : message.role === "assistant" ? (
                 <MarkdownReply content={message.content || ""} />
               ) : (
-                <Typography.Paragraph
-                  style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
-                >
-                  {message.content}
-                </Typography.Paragraph>
+                <>
+                  <Typography.Paragraph
+                    style={{ whiteSpace: "pre-wrap", marginBottom: 0 }}
+                  >
+                    {message.content}
+                  </Typography.Paragraph>
+                  {message.id === lastUserId && retryControl}
+                </>
               )}
             </div>
           );
         })}
-        {sentDraft && <div className="message-bubble user">{sentDraft}</div>}
+        {sentDraft && (
+          <div className="message-bubble user">
+            {sentDraft}
+            {retryControl}
+          </div>
+        )}
         {busy && !hasStreamText && <div className="thinking-status" role="status" aria-live="polite">思考中…</div>}
         {drafts
           .filter(
@@ -605,17 +712,22 @@ export function Conversation({
         ref={end}
         style={{ scrollMarginBottom: "calc(var(--composer-height) + 16px)" }}
       />
-      {newReply && (
-        <Button
-          onClick={() => {
-            scrollToEnd();
-            setNewReply(false);
-          }}
-        >
-          有新回复 ↓
-        </Button>
-      )}
       <div className="conversation-controls" ref={controls}>
+        {showScrollToEnd && (
+          <Button
+            className="new-reply-shortcut"
+            aria-label="跳到最新消息"
+            title="跳到最新消息"
+            onClick={scrollToEnd}
+          >
+            <span className="scroll-shortcut-arrow arrow-down" aria-hidden="true" />
+          </Button>
+        )}
+        {guideOpen && <div className="conversation-guide" role="status">
+          <div><strong>从一句提问开始，快速了解功能。</strong></div>
+          <Button type="text" aria-label="关闭对话引导" onClick={() => void dismissGuide()}>×</Button>
+        </div>}
+        {guideError && <Alert type="warning" message="引导关闭状态未保存" description={guideError} action={<Button onClick={() => void dismissGuide()}>重试</Button>} />}
         <div className="composer-row">
           <Button
             type="text"
@@ -689,10 +801,10 @@ export function Conversation({
               }}
               maxLength={8000}
               autoSize={{ minRows: 1, maxRows: 6 }}
-              placeholder="例如：今天卧推60公斤两组8次，65公斤两组6次"
+              placeholder="提问或记录训练"
             />
             <Button
-              className="send-arrow"
+              className={`send-arrow ${guideOpen ? "guide-send" : ""}`}
               type="primary"
               aria-label="发送消息"
               title="发送"

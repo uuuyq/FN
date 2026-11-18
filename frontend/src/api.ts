@@ -9,6 +9,7 @@ export type Entry = {
   exercise_id?: string | null;
   custom_name?: string | null;
   confirm_create?: boolean;
+  training_parts?: string[];
   name?: string;
   sets: Group[];
 };
@@ -29,9 +30,11 @@ export type Exercise = {
   id: string;
   name: string;
   aliases: string;
+  training_parts: string[];
   primary_muscles: string;
   secondary_muscles: string;
   equipment: string;
+  category: string | null;
   owner_id: string | null;
   active: boolean;
   description: string;

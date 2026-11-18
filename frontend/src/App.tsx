@@ -1,3 +1,5 @@
+import { TrainingParts, trainingParts } from "./TrainingParts";
+import { WelcomeNotice } from "./WelcomeNotice";
 import { getErrorMessage } from "./errors";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -31,7 +33,7 @@ import { useWorkoutEditor } from "./useWorkoutEditor";
 import { Conversation } from "./Conversation";
 import { TrainingCalendar } from "./TrainingCalendar";
 import { EquipmentCatalog } from "./EquipmentCatalog";
-import { ExerciseCatalog } from "./ExerciseCatalog";
+import { ExerciseCatalog, categories as exerciseCategories } from "./ExerciseCatalog";
 const { Title, Text } = Typography;
 const dateHere = (timeZone = "Asia/Shanghai") =>
   new Date().toLocaleDateString("sv-SE", { timeZone });
@@ -69,7 +71,6 @@ export function App() {
   const [modelBusy, setModelBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const setContent = setDraftContent;
-  const [preview, setPreview] = useState(false);
   const [profile, setProfile] = useState<any>({}),
     [aiConfig, setAiConfig] = useState<any>({});
   const [tab, setTab] = useState("home"),
@@ -120,7 +121,10 @@ export function App() {
     }
     setCatalog(rows);
   };
+  const [guideSignal, setGuideSignal] = useState(0);
   const [revision, setRevision] = useState(0);
+  const [showCalendarShortcut, setShowCalendarShortcut] = useState(false);
+  const [nearConversationBottom, setNearConversationBottom] = useState(true);
   const [settingsSection, setSettingsSection] = useState("general");
   const bumpRevision = () => setRevision((v) => v + 1);
   const meaningful = content.exercises.length > 0;
@@ -131,7 +135,6 @@ export function App() {
   };
   const finishSave = async () => {
     await saveRecord();
-    setPreview(false);
     setNotice("记录已保存");
     bumpRevision();
     setTab("home");
@@ -171,6 +174,18 @@ export function App() {
       })
       .finally(() => setReady(true));
   }, []);
+  useEffect(() => {
+    if (!ready || !user) return;
+    setShowCalendarShortcut(false);
+    const calendar = document.getElementById("training-calendar");
+    if (!calendar) return;
+
+    const observer = new IntersectionObserver(([entry]) => {
+      setShowCalendarShortcut(!entry.isIntersecting);
+    });
+    observer.observe(calendar);
+    return () => observer.disconnect();
+  }, [ready, user]);
   const updateEntry = (index: number, change: any) =>
     setContent({
       ...content,
@@ -298,7 +313,7 @@ export function App() {
   const record = (
     <>
       <fieldset
-        disabled={busy || preview || saving || pending}
+        disabled={busy || saving || pending}
         style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}
       >
         <div role="status" aria-live="polite" style={{ marginBottom: 16 }}>
@@ -415,6 +430,7 @@ export function App() {
                       updateEntry(index, { custom_name: e.target.value })
                     }
                   />
+                  <Select mode="multiple" aria-label="训练部位" value={entry.training_parts || []} onChange={training_parts => updateEntry(index, {training_parts})} options={trainingParts.map(value => ({value, label: value}))} />
                   <Checkbox
                     checked={entry.confirm_create}
                     onChange={(e) =>
@@ -516,6 +532,12 @@ export function App() {
             </Button>
           </Card>
         ))}
+        <Input.TextArea
+          aria-label="训练备注"
+          placeholder="训练备注"
+          value={content.notes}
+          onChange={(e) => setContent({ ...content, notes: e.target.value })}
+        />
         <Space wrap>
           <Button
             onClick={() =>
@@ -543,38 +565,7 @@ export function App() {
           >
             保存记录
           </Button>
-          <Button
-            aria-label="完整预览"
-            disabled={!meaningful}
-            onClick={() => setPreview(true)}
-          >
-            完整预览
-          </Button>
-          <Button
-            danger
-            disabled={!active || busy}
-            onClick={() => {
-              modal.confirm({
-                title: "放弃未保存的修改？",
-                okText: "放弃修改",
-                cancelText: "继续编辑",
-                onOk: () => {
-                  replace(null);
-                  setTab("home");
-                  setNotice("");
-                },
-              });
-            }}
-          >
-            放弃修改
-          </Button>
         </Space>
-        <Input.TextArea
-          aria-label="训练备注"
-          placeholder="训练备注"
-          value={content.notes}
-          onChange={(e) => setContent({ ...content, notes: e.target.value })}
-        />
       </fieldset>
       {pending && !saving && (
         <Button
@@ -618,6 +609,26 @@ export function App() {
                   primary_muscles: e.primary_muscles,
                   secondary_muscles: e.secondary_muscles,
                   equipment: e.equipment,
+                });
+              }}
+              remove={(e) => {
+                modal.confirm({
+                  title: `删除动作「${e.name}」？`,
+                  content: "已被训练记录使用的动作无法删除。",
+                  okText: "删除",
+                  okButtonProps: { danger: true },
+                  cancelText: "取消",
+                  onOk: async () => {
+                    try {
+                      await api(`/exercises/${e.id}`, "DELETE", {
+                        version: e.version,
+                      });
+                      await loadCatalog();
+                      void messageApi.success("动作已删除");
+                    } catch (err) {
+                      void messageApi.error(getErrorMessage(err));
+                    }
+                  },
                 });
               }}
             />
@@ -882,6 +893,7 @@ export function App() {
           <Brand />
         </div>
         <Space wrap>
+          <WelcomeNotice onGuide={() => { setTab("home"); setGuideSignal(v => v + 1); }} />
           <Button onClick={() => setTab("catalog")}>动作与器械</Button>
           <Dropdown
             menu={{
@@ -919,21 +931,6 @@ export function App() {
           message={error}
         />
       )}
-      <Button
-        className="back-to-top"
-        aria-label="返回顶部"
-        title="返回顶部"
-        onClick={() =>
-          window.scrollTo({
-            top: 0,
-            behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
-              ? "instant"
-              : "smooth",
-          })
-        }
-      >
-        ⌃
-      </Button>
       <section className="workspace">
         <div>
           {notice && (
@@ -951,13 +948,36 @@ export function App() {
             edit={(w) => openEditor(w)}
             add={(date) => openEditor(null, date)}
           />
+          {showCalendarShortcut && nearConversationBottom && (
+            <Button
+              className="calendar-shortcut"
+              aria-label="返回日历"
+              title="返回日历"
+              onClick={() =>
+                document.getElementById("training-calendar")?.scrollIntoView({
+                  behavior: matchMedia(
+                    "(prefers-reduced-motion: reduce)",
+                  ).matches
+                    ? "instant"
+                    : "smooth",
+                  block: "start",
+                })
+              }
+            >
+              <span className="scroll-shortcut-arrow arrow-up" aria-hidden="true" />
+            </Button>
+          )}
         </div>
         <hr className="workspace-divider" />
         <div className="conversation-workspace">
           {" "}
           <Conversation
+            key={user.id}
             owner={user.id}
+            onboarding={user.onboarding_dismissed === false}
+            guideSignal={guideSignal}
             onLock={setModelBusy}
+            onNearBottomChange={setNearConversationBottom}
             refresh={async () => {
               await load();
               bumpRevision();
@@ -1001,18 +1021,6 @@ export function App() {
         )}
       </Modal>
       <Modal
-        title="完整训练预览"
-        open={preview}
-        width={800}
-        onCancel={() => setPreview(false)}
-        confirmLoading={busy || saving}
-        cancelText="取消"
-        okText="保存记录"
-        onOk={() => void run(finishSave)}
-      >
-        <TrainingSummary content={content} catalog={catalog} />
-      </Modal>
-      <Modal
         title={custom ? "编辑自定义动作" : "创建自定义动作"}
         okText="保存"
         cancelText="取消"
@@ -1034,11 +1042,17 @@ export function App() {
               );
               setCustom(false);
               await loadCatalog();
+              setRevision((v) => v + 1);
+              void messageApi.success(custom ? "动作已更新" : "动作创建成功");
             })
           }
         >
+          <Form.Item name="training_parts" label="训练部位" initialValue={[]}>
+            <Select mode="multiple" options={trainingParts.map(value => ({value, label: <TrainingParts parts={[value]} />}))} />
+          </Form.Item>
           {[
             ["name", "名称"],
+            ["category", "分类"],
             ["aliases", "别名"],
             ["primary_muscles", "主要肌群"],
             ["secondary_muscles", "辅助肌群"],
@@ -1050,11 +1064,23 @@ export function App() {
               name={name}
               label={
                 label +
-                (["name", "description"].includes(name) ? "" : "（顿号分隔）")
+                (["name", "description", "category"].includes(name)
+                  ? ""
+                  : "（顿号分隔）")
               }
+              initialValue={name === "category" ? "其他" : undefined}
               rules={name === "name" ? [{ required: true }] : []}
             >
-              <Input />
+              {name === "category" ? (
+                <Select
+                  options={exerciseCategories.map((value) => ({
+                    value,
+                    label: value,
+                  }))}
+                />
+              ) : (
+                <Input />
+              )}
             </Form.Item>
           ))}
         </Form>

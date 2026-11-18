@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Button, Dropdown, Empty, Input, Select } from "antd";
 import type { Exercise } from "./api";
-const categories = [
+export const categories = [
   "胸部",
   "背部",
   "肩部",
@@ -17,10 +17,13 @@ function category(e: Exercise) {
   if (/背|斜方|竖脊/.test(m)) return "背部";
   if (/三角|肩/.test(m)) return "肩部";
   if (/肱|前臂|腕/.test(m)) return "手臂";
-  if (/股|臀|腘|小腿|腓肠|比目鱼|髋|胫/.test(m)) return "腿臀";
+  if (/股|臀|腘|小腿|腓肠|比目鱼|髋|胫|内收/.test(m)) return "腿臀";
   if (/腹|核心/.test(m)) return "核心";
   if (/全身|心肺|心血管/.test(m)) return "有氧与全身";
   return "其他";
+}
+function groupOf(e: Exercise) {
+  return e.category || category(e);
 }
 export function ExerciseCatalog({
   items,
@@ -28,12 +31,14 @@ export function ExerciseCatalog({
   toggle,
   create,
   edit,
+  remove,
 }: {
   items: Exercise[];
   busy: boolean;
   toggle: (e: Exercise) => void;
   create: () => void;
   edit: (e: Exercise) => void;
+  remove: (e: Exercise) => void;
 }) {
   const [search, setSearch] = useState("");
   const [group, setGroup] = useState("全部");
@@ -41,7 +46,7 @@ export function ExerciseCatalog({
   const visible = items.filter(
     (e) =>
       e.name.toLowerCase().includes(search.trim().toLowerCase()) &&
-      (group === "全部" || category(e) === group) &&
+      (group === "全部" || groupOf(e) === group) &&
       (!equipment ||
         (equipment === "徒手"
           ? e.equipment.length === 0
@@ -72,7 +77,7 @@ export function ExerciseCatalog({
       <div className="catalog-categories" aria-label="动作分类">
         {[
           "全部",
-          ...categories.filter((c) => items.some((e) => category(e) === c)),
+          ...categories.filter((c) => items.some((e) => groupOf(e) === c)),
         ].map((c) => (
           <Button
             key={c}
@@ -88,7 +93,7 @@ export function ExerciseCatalog({
       </p>
       {!visible.length && <Empty description="没有符合条件的动作" />}
       {categories.map((c) => {
-        const rows = visible.filter((e) => category(e) === c);
+        const rows = visible.filter((e) => groupOf(e) === c);
         return (
           rows.length > 0 && (
             <section key={c} className="catalog-section">
@@ -118,9 +123,10 @@ export function ExerciseCatalog({
                         menu={{
                           items: [
                             { key: "edit", label: "编辑" },
+                            { key: "delete", label: "删除", danger: true },
                           ],
                           onClick: ({ key }) =>
-                            key === "edit" && edit(e),
+                            key === "edit" ? edit(e) : remove(e),
                         }}
                       >
                         <Button

@@ -1,4 +1,4 @@
-"""Export/import a complete FitPlan data snapshot (JSON, no schema execution)."""
+"""Export/import a complete FNote data snapshot (JSON, no schema execution)."""
 import argparse
 from contextlib import contextmanager
 import json

@@ -41,7 +41,7 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
         token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
         db.add(UserSession(token_hash=hashlib.sha256(token.encode()).hexdigest(), user_id=user.id, csrf=csrf, expires=int(time.time()) + 604800))
         response.set_cookie('fitplan_session', token, httponly=True, secure=secure, samesite='lax', max_age=604800)
-        return {'id': user.id, 'username': user.username, 'csrf_token': csrf}
+        return {'id': user.id, 'username': user.username, 'csrf_token': csrf, 'onboarding_dismissed': user.onboarding_dismissed}
 
     @app.post('/api/auth/register')
     def create_account(body: Register, request: Request, response: Response):
@@ -133,7 +133,14 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
         with Session(engine) as db:
             user = db.get(User, user_id)
             session = db.get(UserSession, hashlib.sha256(request.cookies['fitplan_session'].encode()).hexdigest())
-            return {'id': user.id, 'username': user.username, 'csrf_token': session.csrf}
+            return {'id': user.id, 'username': user.username, 'csrf_token': session.csrf, 'onboarding_dismissed': user.onboarding_dismissed}
+
+    @app.post('/api/auth/onboarding/dismiss')
+    def dismiss_onboarding(request: Request, x_request_id: RequestId, user_id=Depends(identity)):
+        def action(db):
+            db.get(User, user_id).onboarding_dismissed = True
+            return {'onboarding_dismissed': True}
+        return mutate(request, user_id, x_request_id, {}, action)
 
     @app.post('/api/auth/logout')
     def logout(request: Request, response: Response, user_id=Depends(identity)):

@@ -46,8 +46,21 @@ def register(app, engine, identity, mutate, secure, password_hasher, dummy_hash)
                 Workout.user_id == user_id, Workout.deleted_at.is_(None),
                 Workout.actual_date >= first, Workout.actual_date <= last
             ).group_by(Workout.actual_date)).all()
+            from ...models import WorkoutSet, PublicExercise, UserExercise
+            part_rows = db.execute(select(Workout.actual_date, PublicExercise.training_parts, UserExercise.training_parts)
+                .join(WorkoutSet, WorkoutSet.workout_id == Workout.id)
+                .outerjoin(PublicExercise, WorkoutSet.public_exercise_id == PublicExercise.id)
+                .outerjoin(UserExercise, WorkoutSet.user_exercise_id == UserExercise.id)
+                .where(Workout.user_id == user_id, Workout.deleted_at.is_(None),
+                       Workout.actual_date >= first, Workout.actual_date <= last)).all()
+            parts = {}
+            for day, public, personal in part_rows:
+                parts.setdefault(day, set()).update(public or personal or [])
+            order = ['胸', '背', '腿', '二头', '三头', '肩', '腹']
             return {'month': month, 'training_days': len(rows),
-                    'days': [{'date': day, 'count': count} for day, count in rows]}
+                    'days': [{'date': day, 'count': count,
+                              'parts': [part for part in order if part in parts.get(day, set())]}
+                             for day, count in rows]}
 
     @app.get('/api/workouts/{object_id}')
     def get_workout(object_id: str, user_id=Depends(identity)):

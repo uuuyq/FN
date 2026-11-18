@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Input, Select, message, Spin, Typography } from "antd";
+import {
+  Alert,
+  Button,
+  Dropdown,
+  Form,
+  Input,
+  Modal,
+  Select,
+  message,
+  Spin,
+  Typography,
+} from "antd";
 import { api } from "./api";
 import { getErrorMessage } from "./errors";
 
@@ -24,15 +35,16 @@ export function EquipmentCatalog({
 }) {
   const [mine, setMine] = useState(initialList);
   const [presets, setPresets] = useState(initialList);
-  const [names, setNames] = useState<Record<string, string>>({});
-  const [category, setCategory] = useState("其他");
-  const [editedCategories, setEditedCategories] = useState<Record<string, string>>({});
-  const [name, setName] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<Equipment | null>(null);
+  const [form] = Form.useForm();
   const [query, setQuery] = useState("");
+  const [group, setGroup] = useState("全部");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const generation = useRef(0);
-  const [messageApi, holder] = message.useMessage();
+  const [messageApi, messageHolder] = message.useMessage();
+  const [modalApi, modalHolder] = Modal.useModal();
 
   const load = async () => {
     const current = ++generation.current;
@@ -94,6 +106,29 @@ export function EquipmentCatalog({
       )}
     </>
   );
+  const openAdd = () => {
+    form.resetFields();
+    setEditing(null);
+    setAdding(true);
+  };
+  const openEdit = (item: Equipment) => {
+    form.setFieldsValue({ name: item.name, category: item.category });
+    setEditing(item);
+  };
+  const confirmRemove = (item: Equipment) => {
+    modalApi.confirm({
+      title: `删除器械「${item.name}」？`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: () =>
+        mutate(async () => {
+          await api("/user-equipment/" + item.id, "DELETE", {
+            version: item.version,
+          });
+        }, "器械已删除"),
+    });
+  };
   const publicIds = new Set(presets.items.map((item) => item.id));
   const entries = [
     ...presets.items.map((item) => ({
@@ -111,6 +146,7 @@ export function EquipmentCatalog({
   ];
   const search = query.trim().toLocaleLowerCase();
   const groups = categories
+    .filter((name) => group === "全部" || group === name)
     .map((category) => ({
       name: category,
       items: entries.filter(
@@ -121,117 +157,88 @@ export function EquipmentCatalog({
           ),
       ),
     }))
-    .filter((group) => group.items.length);
+    .filter((entry) => entry.items.length);
   return (
     <div className="equipment-catalog">
-      {holder}
-      <Input.Search
-        aria-label="搜索器械"
-        placeholder="搜索器械"
-        allowClear
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-      />
-      <form
-        className="equipment-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (!name.trim()) return;
-          void mutate(async () => {
-            await api("/user-equipment", "POST", { name: name.trim(), category });
-            setName("");
-          }, "器械已添加");
-        }}
-      >
-        <Input
-          aria-label="自定义器械名称"
-          placeholder="自定义器械名称"
-          value={name}
-          maxLength={100}
-          disabled={busy}
-          onChange={(event) => setName(event.target.value)}
+      {messageHolder}
+      {modalHolder}
+      <div className="catalog-toolbar">
+        <Input.Search
+          aria-label="搜索器械"
+          placeholder="搜索器械"
+          allowClear
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
         />
-        <Select aria-label="器械分类" value={category} disabled={busy} options={categories.map(value => ({ value, label: value }))} onChange={setCategory} />
-        <Button htmlType="submit" disabled={busy || !name.trim()}>
+        <Button type="primary" onClick={openAdd}>
           新增器械
         </Button>
-      </form>
+      </div>
+      <div className="catalog-categories" aria-label="器械分类">
+        {[
+          "全部",
+          ...categories.filter((name) =>
+            entries.some((entry) => entry.category === name),
+          ),
+        ].map((name) => (
+          <Button
+            key={name}
+            type={group === name ? "primary" : "text"}
+            onClick={() => setGroup(name)}
+          >
+            {name}
+          </Button>
+        ))}
+      </div>
       {status(mine)}
       {status(presets)}
       {groups.map((group) => (
-        <section key={group.name} aria-label={group.name}>
-          <Typography.Title level={4}>{group.name}</Typography.Title>
-          <div className="equipment-presets">
+        <section key={group.name} className="catalog-section" aria-label={group.name}>
+          <h3>
+            {group.name} <small>{group.items.length}</small>
+          </h3>
+          <div className="exercise-grid">
             {group.items.map(({ item, user }) => {
               if (!user)
                 return (
-                  <div className="equipment-row" key={"public-" + item.id}>
-                    <span>{item.name}</span>
+                  <div className="exercise-tile" key={"public-" + item.id}>
+                    <button type="button" aria-label={item.name} disabled>
+                      <strong>{item.name}</strong>
+                      <span>{item.category}</span>
+                    </button>
                   </div>
                 );
-              item = user;
-              const edited = names[item.id] ?? item.name;
               return (
-                <div className="equipment-row" key={item.id}>
-                  <Input
-                    aria-label="器械名称"
-                    value={edited}
-                    maxLength={100}
+                <div className="exercise-tile selectable" key={item.id}>
+                  <button
+                    type="button"
+                    aria-label={item.name}
                     disabled={busy}
-                    onChange={(event) =>
-                      setNames((old) => ({
-                        ...old,
-                        [item.id]: event.target.value,
-                      }))
-                    }
-                  />
-                  <Select aria-label="编辑器械分类" value={editedCategories[item.id] ?? item.category} disabled={busy} options={categories.map(value => ({ value, label: value }))} onChange={value => setEditedCategories(old => ({ ...old, [item.id]: value }))} />
-                  <Button
-                    disabled={busy || !edited.trim() || (edited === item.name && (editedCategories[item.id] ?? item.category) === item.category)}
-                    onClick={() =>
-                      void mutate(async () => {
-                        const updated = await api<Equipment>(
-                          "/user-equipment/" + item.id,
-                          "PUT",
-                          {
-                            name: edited.trim(),
-                            category: editedCategories[item.id] ?? item.category,
-                            equipment_id: item.equipment_id,
-                            version: item.version,
-                          },
-                        );
-                        setMine((old) => ({
-                          ...old,
-                          items: old.items.map((row) =>
-                            row.id === item.id ? updated : row,
-                          ),
-                        }));
-                        setNames((old) => {
-                          const next = { ...old };
-                          delete next[item.id];
-                          return next;
-                        });
-                      }, "器械名称已保存")
-                    }
+                    onClick={() => openEdit(item)}
                   >
-                    保存名称
-                  </Button>
-                  <Button
-                    disabled={busy}
-                    onClick={() =>
-                      void mutate(async () => {
-                        await api("/user-equipment/" + item.id, "DELETE", {
-                          version: item.version,
-                        });
-                        setMine((old) => ({
-                          ...old,
-                          items: old.items.filter((row) => row.id !== item.id),
-                        }));
-                      }, "器械已移除")
-                    }
+                    <strong>{item.name}</strong>
+                    <span>{item.category}</span>
+                  </button>
+                  <Dropdown
+                    trigger={["click"]}
+                    menu={{
+                      items: [
+                        { key: "edit", label: "编辑" },
+                        { key: "delete", label: "删除", danger: true },
+                      ],
+                      onClick: ({ key }) =>
+                        key === "edit" ? openEdit(item) : confirmRemove(item),
+                    }}
                   >
-                    移除
-                  </Button>
+                    <Button
+                      className="exercise-manage"
+                      type="text"
+                      aria-label={`管理器械 ${item.name}`}
+                      disabled={busy}
+                    >
+                      ···
+                    </Button>
+                  </Dropdown>
                 </div>
               );
             })}
@@ -247,6 +254,56 @@ export function EquipmentCatalog({
             {search ? "未找到匹配的器械" : "暂无器械，可自定义添加"}
           </Typography.Paragraph>
         )}
+      <Modal
+        title={editing ? "编辑器械" : "新增器械"}
+        open={adding || !!editing}
+        okText={editing ? "保存" : "添加"}
+        cancelText="取消"
+        confirmLoading={busy}
+        onOk={() => form.submit()}
+        onCancel={() => {
+          setAdding(false);
+          setEditing(null);
+        }}
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) =>
+            void mutate(async () => {
+              const values = {
+                name: (v.name as string).trim(),
+                category: v.category as string,
+              };
+              if (editing) {
+                await api("/user-equipment/" + editing.id, "PUT", {
+                  ...values,
+                  equipment_id: editing.equipment_id,
+                  version: editing.version,
+                });
+              } else {
+                await api("/user-equipment", "POST", values);
+              }
+              setAdding(false);
+              setEditing(null);
+            }, editing ? "器械已保存" : "器械已添加")
+          }
+        >
+          <Form.Item
+            name="name"
+            label="名称"
+            rules={[{ required: true, whitespace: true, message: "请输入器械名称" }]}
+          >
+            <Input aria-label="自定义器械名称" maxLength={100} autoFocus />
+          </Form.Item>
+          <Form.Item name="category" label="分类" initialValue="其他">
+            <Select
+              aria-label="器械分类"
+              options={categories.map((value) => ({ value, label: value }))}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

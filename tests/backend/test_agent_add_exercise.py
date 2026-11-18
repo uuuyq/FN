@@ -9,7 +9,7 @@ from app.agent.contracts import ModelReply, ToolCallRequest
 
 
 def exercise_call(call_id):
-    return ModelReply(type="tool_calls", calls=[ToolCallRequest(id=call_id, name="add_exercise", arguments={"name": "T杠划船"})])
+    return ModelReply(type="tool_calls", calls=[ToolCallRequest(id=call_id, name="add_exercise", arguments={"name": "T杠划船", "training_parts": ["背"]})])
 
 
 @pytest.mark.parametrize('decision', ['confirm', 'cancel'])
@@ -45,6 +45,7 @@ def test_add_exercise_only_creates_catalog_entry_after_confirm(env, decision):
         assert db.scalar(select(func.count()).select_from(UserExercise)) == (1 if decision == 'confirm' else 0)
         if decision == 'confirm':
             exercise = db.scalar(select(UserExercise))
+            assert exercise.training_parts == ['背']
             assert db.scalar(select(UserExercisePreference).where(UserExercisePreference.user_exercise_id == exercise.id)).active
             assert other.get('/api/exercises/' + exercise.id).status_code == 404
     if decision == 'confirm':

@@ -9,9 +9,8 @@ export function Brand() {
           alt=""
           aria-hidden="true"
         />
-        <span>Fnote</span>
+        <span>FNote</span>
       </h1>
-      <p className="brand-tagline">每一次训练，都有迹可循。</p>
     </div>
   );
 }

@@ -14,7 +14,7 @@ if (!(Test-Path -LiteralPath $stateFile)) {
         $process.WaitForExit(10000) | Out-Null
     }
     Remove-Item -LiteralPath $stateFile
-    Write-Host 'FitPlan stopped. SQLite WAL is recovered at the next connection.'
+    Write-Host 'FNote stopped. SQLite WAL is recovered at the next connection.'
 }
 try {
     $taskName = 'FitPlan-WorkoutCleanup'

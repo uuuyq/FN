@@ -13,6 +13,7 @@ def test_registration_validation_duplicate_and_automatic_session(env):
     result=a.post('/api/auth/register',json=body)
     assert result.status_code==200 and result.json()['username']=='new-user'
     assert a.get('/api/auth/me').json()['id']==result.json()['id']
+    assert result.json()['onboarding_dismissed'] is False
     assert 'HttpOnly' in result.headers['set-cookie']
     assert b.post('/api/auth/register',json=body).json()['detail']['code']=='username_taken'
     with Session(engine) as db:

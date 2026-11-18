@@ -1,3 +1,4 @@
+import { TrainingParts } from "./TrainingParts";
 import { Alert, Button, Card, Space, Typography } from "antd";
 import {
   actionDecided,
@@ -118,6 +119,7 @@ function Details({
     return (
       <>
         <p>新增个人动作：{details.name}</p>
+        <TrainingParts parts={details.training_parts || []} />
         {action.status === "pending" && <p>确认后加入选择动作。</p>}
         {action.status === "confirmed" && <p>已加入选择动作。</p>}
         {[

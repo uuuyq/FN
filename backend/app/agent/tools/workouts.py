@@ -1,3 +1,4 @@
+from ...schemas import TrainingPart
 """Workout tools. Write tools only validate and propose; execution runs on confirm."""
 from datetime import date, time
 from decimal import Decimal
@@ -46,6 +47,7 @@ class ToolSetInput(Schema):
 
 
 class ToolExerciseInput(Schema):
+    training_parts: list[TrainingPart] = Field(default_factory=list, description='新建动作的训练部位，可多选，无法确定时询问用户')
     exercise_id: str | None = Field(default=None, description='上下文动作目录中的 ID，与 custom_name 二选一')
     custom_name: str | None = Field(default=None, min_length=1, max_length=100,
         description='新建个人动作的名称，与 exercise_id 二选一')

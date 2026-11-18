@@ -89,7 +89,7 @@ await runE2E("records-local-cache", async ({ origin, login, scenario }) => {
     await page.getByText("记录已保存", { exact: true }).waitFor();
   };
   await scenario(
-    "typing, preview and closing perform zero writes",
+    "typing and closing perform zero writes",
     async () => {
       await page
         .getByRole("button", { name: `${day} 没有记录`, exact: true })
@@ -98,11 +98,6 @@ await runE2E("records-local-cache", async ({ origin, login, scenario }) => {
       await page.getByRole("button", { name: "添加动作", exact: true }).click();
       await weight().fill("60");
       await reps().fill("8");
-      await page.getByRole("button", { name: "完整预览", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "完整训练预览", exact: true })
-        .getByRole("button", { name: /取\s*消/ })
-        .click();
       await close();
       assert.equal(writes.length, 0);
       assert.equal((await workouts()).total, 0);
@@ -177,12 +172,7 @@ await runE2E("records-local-cache", async ({ origin, login, scenario }) => {
         .click();
       await page.getByRole("button", { name: "编辑记录", exact: true }).click();
       await reps().fill("15");
-      await page.getByRole("button", { name: "放弃修改", exact: true }).click();
-      await page
-        .getByRole("dialog")
-        .filter({ hasText: "放弃未保存的修改？" })
-        .getByRole("button", { name: "放弃修改", exact: true })
-        .click();
+      await close();
       await expect(
         page.getByRole("button", { name: "继续编辑未保存的记录" }),
       ).toHaveCount(0);

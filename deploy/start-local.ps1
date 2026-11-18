@@ -2,7 +2,7 @@ param([switch]$Background, [switch]$Prepare, [switch]$NoBuild)
 $ErrorActionPreference = 'Stop'
 try {
     $health = Invoke-RestMethod 'http://127.0.0.1:8765/api/health' -TimeoutSec 2
-    if ($health.status -eq 'ok') { Write-Host 'FitPlan is already running: http://127.0.0.1:8765'; exit 0 }
+    if ($health.status -eq 'ok') { Write-Host 'FNote is already running: http://127.0.0.1:8765'; exit 0 }
 } catch {}
 if (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue) {
     throw 'Port 8765 is occupied by another process; stop it or run deploy/stop-local.ps1 first'
@@ -67,7 +67,7 @@ raise SystemExit(0 if revision == ScriptDirectory.from_config(Config('alembic.in
         if (Test-Path -LiteralPath $stateFile) {
             $old = Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
             $existing = Get-Process -Id $old.pid -ErrorAction SilentlyContinue
-            if ($existing -and $existing.StartTime.ToUniversalTime().Ticks.ToString() -eq $old.started) { throw 'FitPlan is already running' }
+            if ($existing -and $existing.StartTime.ToUniversalTime().Ticks.ToString() -eq $old.started) { throw 'FNote is already running' }
         }
         $process = Start-Process -FilePath $python -ArgumentList @('-m','scripts.local','serve') -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $runtime 'server.log') -RedirectStandardError (Join-Path $runtime 'server-error.log')
         @{pid=$process.Id;started=$process.StartTime.ToUniversalTime().Ticks.ToString();python=$python} | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding utf8
@@ -86,7 +86,7 @@ raise SystemExit(0 if revision == ScriptDirectory.from_config(Config('alembic.in
             } catch {}
         }
         if (!$ready) { throw 'Server did not become ready; check runtime logs' }
-        Write-Host 'FitPlan is running: http://127.0.0.1:8765'
+        Write-Host 'FNote is running: http://127.0.0.1:8765'
     } else {
         & $python -m scripts.local serve
         if ($LASTEXITCODE -ne 0) { throw 'Server exited with an error' }

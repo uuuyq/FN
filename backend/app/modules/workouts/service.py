@@ -135,7 +135,7 @@ def save_workout(db, user_id, data, obj=None):
             row = db.scalar(select(UserExercise).where(UserExercise.user_id == user_id,
                 UserExercise.normalized_name == normalize_exercise_text(item['custom_name'])))
             if row is None:
-                row = create_exercise(db, user_id, ExerciseInput(name=item['custom_name']))
+                row = create_exercise(db, user_id, ExerciseInput(name=item['custom_name'], training_parts=item.get('training_parts', [])))
         targets.append(preference_target(row))
     if obj is None:
         obj = Workout(user_id=user_id, actual_date=data['actual_date'])

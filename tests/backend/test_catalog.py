@@ -19,7 +19,7 @@ def test_new_custom_defaults_active_and_text_metadata_roundtrips(env):
     assert row['equipment'] == '哑铃、训练凳'
     assert row['primary_muscles'] == '背阔肌'
     assert 'archived' not in row and 'available' not in row
-    assert a.get('/api/exercises?active=true').json()['items'] == [row]
+    assert row in a.get('/api/exercises?active=true').json()['items']
     assert b.get('/api/exercises/' + row['id']).status_code == 404
     write(b, '/exercise-preferences', {'items': [
         {'exercise_id': row['id'], 'version': 1, 'active': True}]}, 'PUT', status=404)
@@ -38,13 +38,20 @@ def test_normalized_names_deduplicate_create_update_and_keep_user_scope(env):
 
 def test_public_preferences_are_user_specific_and_reversible(env):
     _, (a, b) = env
+    # Exercises without a preference default to active for every user.
+    assert any(item['id'] == 'bench-press'
+               for item in b.get('/api/exercises?active=true').json()['items'])
     write(a, '/exercise-preferences', {'items': [
-        {'exercise_id': 'bench-press', 'version': 1, 'active': True}]}, 'PUT')
-    assert a.get('/api/exercises?active=true').json()['total'] == 1
-    assert b.get('/api/exercises?active=true').json()['total'] == 0
+        {'exercise_id': 'bench-press', 'version': 1, 'active': False}]}, 'PUT')
+    assert all(item['id'] != 'bench-press'
+               for item in a.get('/api/exercises?active=true').json()['items'])
+    # A user-specific opt-out never affects other users.
+    assert any(item['id'] == 'bench-press'
+               for item in b.get('/api/exercises?active=true').json()['items'])
     write(a, '/exercise-preferences', {'items': [
-        {'exercise_id': 'bench-press', 'version': 2, 'active': False}]}, 'PUT')
-    assert a.get('/api/exercises?active=true').json()['total'] == 0
+        {'exercise_id': 'bench-press', 'version': 2, 'active': True}]}, 'PUT')
+    assert any(item['id'] == 'bench-press'
+               for item in a.get('/api/exercises?active=true').json()['items'])
     write(a, '/exercises/bench-press', {'name': 'changed', 'version': 1}, 'PUT', status=403)
 
 
@@ -68,8 +75,12 @@ def test_sql_pagination_search_and_complete_list_have_constant_queries(env):
             all_rows = list_exercises(db, user_id)
             assert len(all_rows) > 50 and len(statements) == 1
             statements.clear()
-            assert list_exercises(db, user_id, active=True) == []
+            assert len(list_exercises(db, user_id, active=True)) == len(all_rows)
             assert len(statements) == 1
+            statements.clear()
+            assert list_exercises(db, user_id, active=False) == []
+            assert len(statements) == 1
+            statements.clear()
             assert query_exercises(db, user_id, q='%')['total'] == 0
     finally:
         event.remove(engine, 'before_cursor_execute', record)
@@ -107,9 +118,35 @@ def test_training_custom_creation_reuses_name_and_defaults_active(env):
     workout = write(a, '/workouts', body)
     entries = workout['content']['exercises']
     assert entries[0]['exercise_id'] == entries[1]['exercise_id']
-    catalog = a.get('/api/exercises?active=true').json()
-    assert catalog['total'] == 1
-    assert catalog['items'][0]['id'] == entries[0]['exercise_id']
+    catalog = a.get('/api/exercises?active=true').json()['items']
+    assert any(item['id'] == entries[0]['exercise_id'] for item in catalog)
+
+
+def test_delete_unused_custom_exercise_removes_preference(env):
+    from uuid import uuid4
+    _, (a, _) = env
+    row = write(a, '/exercises', {'name': '待删除动作'})
+    result = write(a, '/exercises/' + row['id'], {'version': row['version']}, 'DELETE')
+    assert result == {'removed': True}
+    assert all(item['id'] != row['id'] for item in a.get('/api/exercises').json()['items'])
+    assert a.get('/api/exercises/' + row['id']).status_code == 404
+
+
+def test_delete_exercise_referenced_by_workout_is_rejected(env):
+    from uuid import uuid4
+    _, (a, _) = env
+    body = {'content': {'actual_date': '2026-01-02', 'exercises': [
+        {'custom_name': '在用动作', 'confirm_create': True, 'sets': [{'reps': 8}]},
+    ]}}
+    workout = write(a, '/workouts', body)
+    exercise_id = workout['content']['exercises'][0]['exercise_id']
+    row = a.get('/api/exercises/' + exercise_id).json()
+    response = a.request('DELETE', '/api/exercises/' + exercise_id,
+                         json={'version': row['version']},
+                         headers={'X-Request-ID': str(uuid4())})
+    assert response.status_code == 409, response.text
+    assert response.json()['detail']['code'] == 'exercise_in_use'
+    assert a.get('/api/exercises/' + exercise_id).status_code == 200
 
 
 def test_equipment_categories(env):

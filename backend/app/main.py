@@ -3,6 +3,7 @@ import os
 import secrets
 import sqlite3
 import time
+from urllib.parse import urlsplit
 
 from argon2 import PasswordHasher
 from fastapi import FastAPI, Header, Request
@@ -21,7 +22,7 @@ from typing import Annotated
 
 def create_app(engine=None):
     engine = engine or make_engine()
-    app = FastAPI(title='FitPlan', version='0.1.0')
+    app = FastAPI(title='FNote', version='0.1.0')
     app.state.engine = engine
     secure = os.getenv('COOKIE_SECURE', 'true').lower() == 'true'
     password_hasher = PasswordHasher()
@@ -107,7 +108,11 @@ def create_app(engine=None):
         root = Path(os.environ['FRONTEND_DIST']).resolve(strict=True)
         if not (root / 'index.html').is_file():
             raise RuntimeError('Build the frontend before starting local deployment')
-        app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost'])
+        allowed_hosts = ['127.0.0.1', 'localhost']
+        origin_host = urlsplit(os.getenv('APP_ORIGIN', '')).hostname
+        if origin_host:
+            allowed_hosts.append(origin_host)
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
         @app.middleware('http')
         async def local_headers(request, call_next):

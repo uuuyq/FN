@@ -129,7 +129,7 @@ def test_current_date_context_uses_user_timezone(env, monkeypatch):
         assert runtime['today'] == '2026-01-01'
         assert runtime['timezone'] == 'America/Los_Angeles'
         assert 'selected_date' not in runtime
-        assert '未指定训练日期时使用 today' in messages[0]['content']
+        assert '未指定训练日期时使用 today' in messages[0]['content'].replace('`', '')
         assert '选中日期' not in messages[0]['content']
         return reply('好')
 

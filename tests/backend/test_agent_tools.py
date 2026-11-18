@@ -197,7 +197,7 @@ def test_update_card_shows_before_and_after(env):
     assert details['before']['exercises'][0]['sets'][0]['weight_kg'] == '60.125'
     assert details['after']['exercises'][0]['sets'][0]['weight_kg'] == '70'
     # Names are resolved so the user sees real exercise labels, not raw IDs.
-    assert details['after']['exercises'][0]['name'] == '杠铃卧推'
+    assert details['after']['exercises'][0]['name'] == '杠铃平板卧推'
     write(a, '/conversation-actions/' + result['result']['action_id'] + '/confirm', {'version': 1})
     assert a.get('/api/workouts/' + workout['id']).json()['content']['exercises'][0]['sets'][0]['weight_kg'] == '70'
 

@@ -21,6 +21,7 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(100), unique=True)
     password_hash: Mapped[str]
     profile: Mapped[dict] = mapped_column(JSON, default=dict)
+    onboarding_dismissed: Mapped[bool] = mapped_column(default=False, server_default='0')
     profile_version: Mapped[int] = mapped_column(default=1)
     ai_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ai_config_version: Mapped[int] = mapped_column(default=1)
@@ -41,6 +42,7 @@ class ExerciseFields:
     normalized_name: Mapped[str] = mapped_column(String(100))
     aliases: Mapped[str] = mapped_column(Text, default='')
     search_text: Mapped[str] = mapped_column(Text, default='')
+    training_parts: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
     primary_muscles: Mapped[str] = mapped_column(Text, default='')
     secondary_muscles: Mapped[str] = mapped_column(Text, default='')
     equipment: Mapped[str] = mapped_column(Text, default='')

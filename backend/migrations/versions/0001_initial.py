@@ -1,4 +1,4 @@
-"""Initial FitPlan schema with public/user catalogs and two-level training records."""
+"""Initial FNote schema with public/user catalogs and two-level training records."""
 from datetime import datetime, timezone
 from alembic import op
 import sqlalchemy as sa
@@ -82,6 +82,7 @@ def create_initial_schema():
     sa.Column('secondary_muscles', sa.Text(), nullable=False),
     sa.Column('equipment', sa.Text(), nullable=False),
     sa.Column('description', sa.Text(), nullable=False),
+    sa.Column('category', sa.String(length=20), nullable=False, server_default='其他'),
     sa.Column('version', sa.Integer(), nullable=False),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ),
     sa.PrimaryKeyConstraint('id'),
@@ -309,15 +310,44 @@ def upgrade_categories():
     db.execute(sa.text('UPDATE user_equipment SET category = (SELECT category FROM equipment WHERE equipment.id = user_equipment.equipment_id) WHERE equipment_id IS NOT NULL'))
 
 
+def upgrade_user_category():
+    op.add_column('user_exercises',
+                  sa.Column('category', sa.String(length=20), nullable=False, server_default='其他'))
+
+
 def downgrade_categories():
     op.drop_column('user_equipment', 'category')
     op.drop_column('equipment', 'category')
+
+
+def upgrade_training_parts():
+    changed_tables = []
+    for table in ('public_exercises', 'user_exercises'):
+        if 'training_parts' in {column['name'] for column in sa.inspect(op.get_bind()).get_columns(table)}:
+            continue
+        changed_tables.append(table)
+        op.add_column(table, sa.Column('training_parts', sa.JSON(), nullable=False, server_default='[]'))
+    has_onboarding = 'onboarding_dismissed' in {column['name'] for column in sa.inspect(op.get_bind()).get_columns('users')}
+    if not has_onboarding:
+        op.add_column('users', sa.Column('onboarding_dismissed', sa.Boolean(), nullable=False, server_default='0'))
+    connection = op.get_bind()
+    if not has_onboarding:
+        connection.execute(sa.text('UPDATE users SET onboarding_dismissed = 1'))
+    from scripts.catalog_data import EXERCISES
+    for table_name in changed_tables:
+        table = sa.table(table_name, sa.column('id', sa.String), sa.column('normalized_name', sa.String), sa.column('training_parts', sa.JSON))
+        for item in EXERCISES:
+            from app.models import normalize_exercise_text
+            condition = table.c.id == item['id'] if table_name == 'public_exercises' else table.c.normalized_name == normalize_exercise_text(item['name'])
+            connection.execute(table.update().where(condition).values(training_parts=item['training_parts']))
+
 
 
 def upgrade():
     create_initial_schema()
     upgrade_operations()
     upgrade_categories()
+    upgrade_training_parts()
 
 
 def downgrade():

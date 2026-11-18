@@ -1,3 +1,4 @@
+import { TrainingParts } from "./TrainingParts";
 import type { Content, Exercise } from "./api";
 
 // Card contents from the agent carry the same shape as saved Content but may
@@ -31,6 +32,7 @@ export function TrainingSummary({
           <h3>
             {i + 1}. {exerciseName(e)}
           </h3>
+          {e.custom_name && <TrainingParts parts={e.training_parts || []} />}
           {e.sets.map((s, j) => (
             <p key={s.id || j}>
               第 {j + 1} 组 · {s.kind === "warmup" ? "热身" : "正式"} ·{" "}

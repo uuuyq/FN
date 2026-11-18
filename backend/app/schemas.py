@@ -64,7 +64,11 @@ Name = Annotated[str, Field(min_length=1, max_length=100)]
 Category = Literal['胸部', '背部', '肩部', '手臂', '腿臀', '核心', '有氧与全身', '其他']
 
 
+TrainingPart = Literal['胸', '背', '腿', '二头', '三头', '肩', '腹']
+
+
 class ExerciseInput(Schema):
+    training_parts: list[TrainingPart] = Field(default_factory=list, max_length=7)
     name: Name
     aliases: str = Field(default='', max_length=2000)
     primary_muscles: str = Field(default='', max_length=2000)
@@ -109,6 +113,7 @@ class WorkoutExerciseInput(Schema):
     exercise_id: str | None = None
     custom_name: Name | None = None
     confirm_create: bool = False
+    training_parts: list[TrainingPart] = Field(default_factory=list, max_length=7)
     sets: list[SetInput] = Field(min_length=1, max_length=100)
 
     @model_validator(mode='after')

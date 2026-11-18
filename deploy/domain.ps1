@@ -53,10 +53,10 @@ if ($Stop) {
             if (Test-Path -LiteralPath $localStateFile) {
                 & $stopLocalScript
             } else {
-                Write-Warning 'FitPlan is running without a managed process record; stop it manually.'
+                Write-Warning 'FNote is running without a managed process record; stop it manually.'
             }
         } else {
-            Write-Host 'FitPlan is not running.'
+            Write-Host 'FNote is not running.'
         }
     } finally {
         $tunnelService = Get-Service -Name 'cloudflared' -ErrorAction SilentlyContinue
@@ -123,7 +123,7 @@ try {
         } catch {}
         Start-Sleep -Milliseconds 500
     }
-    if (!$ready) { throw 'FitPlan did not become ready. Check runtime/server-error.log.' }
+    if (!$ready) { throw 'FNote did not become ready. Check runtime/server-error.log.' }
 
     $tunnelService = Get-Service -Name 'cloudflared' -ErrorAction Stop
     if ($tunnelService.Status -ne 'Running') {
@@ -133,9 +133,9 @@ try {
     }
 
     Set-Content -LiteralPath $urlFile -Value $publicUrl -Encoding utf8
-    Write-Host "FitPlan is available at: $publicUrl"
+    Write-Host "FNote is available at: $publicUrl"
     Write-Host "Local health check: $healthUrl"
-    Write-Host 'To stop FitPlan and its Cloudflare Tunnel service, run: .\deploy\domain.ps1 -Stop'
+    Write-Host 'To stop FNote and its Cloudflare Tunnel service, run: .\deploy\domain.ps1 -Stop'
 } catch {
     if (Test-Path -LiteralPath $localStateFile) {
         try { & $stopLocalScript } catch {}

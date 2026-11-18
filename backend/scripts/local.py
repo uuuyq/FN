@@ -49,7 +49,7 @@ def exclusive(directory=None):
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
-            raise RuntimeError('FitPlan is running; stop it before migration or restore') from None
+            raise RuntimeError('FNote is running; stop it before migration or restore') from None
         try:
             yield
         finally:
@@ -125,11 +125,13 @@ def main():
             from alembic.script import ScriptDirectory
             if validate(DATABASE) != ScriptDirectory.from_config(Config('alembic.ini')).get_current_head():
                 raise RuntimeError('Database migration required; run prepare')
-            os.environ['COOKIE_SECURE'] = 'false'  # Loopback HTTP only.
-            os.environ['APP_ORIGIN'] = 'http://127.0.0.1:8765'
+            # Local mode defaults to HTTP. A public reverse tunnel can provide
+            # its HTTPS origin and secure-cookie setting in the parent process.
+            os.environ.setdefault('COOKIE_SECURE', 'false')
+            os.environ.setdefault('APP_ORIGIN', 'http://127.0.0.1:8765')
             os.environ['FRONTEND_DIST'] = str(ROOT / 'frontend/dist')
             # Avoid request URLs and request/model bodies in local logs.
-            print('FitPlan: http://127.0.0.1:8765', flush=True)
+            print('FNote: http://127.0.0.1:8765', flush=True)
             uvicorn.run(create_app(), host='127.0.0.1', port=8765, workers=1,
                 access_log=False, log_level='warning', timeout_keep_alive=15,
                 limit_concurrency=64, timeout_graceful_shutdown=10)
