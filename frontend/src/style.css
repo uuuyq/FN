@@ -956,6 +956,15 @@ button:focus-visible {
   }
 }
 
+.ai-config-summary { min-width: 0; margin-bottom: 24px; padding: 16px; background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 12px; }
+.ai-config-summary-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; }
+.ai-config-status { color: #626b78; font-size: 12px; }
+.ai-config-details { margin: 14px 0; }
+.ai-config-details > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; margin-top: 8px; line-height: 1.6; }
+.ai-config-details dt { color: #6b7280; }
+.ai-config-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.ai-config-hint { margin: 12px 0; color: #6b7280; overflow-wrap: anywhere; }
+
 .thinking-status { color: #777; padding: 8px 0; animation: thinking-pulse 1.6s ease-in-out infinite; }
 @keyframes thinking-pulse { 50% { opacity: .4; } }
 @media (prefers-reduced-motion: reduce) { .thinking-status { animation: none; } }

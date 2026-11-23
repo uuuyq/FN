@@ -130,7 +130,7 @@ export function TrainingCalendar({
           );
         })}
       </div>
-      <p className="calendar-legend">部位按当天训练动作汇总 · 点击日期查看或补录</p>
+      <p className="calendar-legend">点击日期查看或手动修改</p>
       <Modal
         title="删除这条训练记录？"
         open={!!deleting}

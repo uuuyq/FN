@@ -687,25 +687,33 @@ export function App() {
       <Form.Item name="history_workout_count" label="参考训练次数">
         <InputNumber min={1} max={50} />
       </Form.Item>
-      <Button htmlType="submit" loading={settingsBusy}>
+      <Button htmlType="submit" type="primary" loading={settingsBusy}>
         保存个人条件
       </Button>
     </Form>
   );
   const aiSettings = (
     <>
-      {aiConfig.has_api_key && <Button danger onClick={() => void runSettings(async () => {
-        setAiConfig(await api('/ai-config', 'DELETE', {}));
-        aiForm.setFieldValue('api_key', undefined);
-      }, '已删除 API Key')}>删除已保存的 Key</Button>}
-      {aiConfig.configured ? (
-        <Text>
-          当前：{aiConfig.model} · {aiConfig.base_url}
-          {aiConfig.has_api_key ? " · 已保存 API Key" : ""}
-        </Text>
-      ) : (
-        <Text>配置模型后即可使用 AI，您也可以先手动记录训练。</Text>
-      )}
+      <div className="ai-config-summary">
+        <div className="ai-config-summary-heading">
+          <Text strong>当前配置</Text>
+          <span className="ai-config-status">
+            {aiConfig.has_api_key ? "API Key 已保存" : "API Key 未保存"}
+          </span>
+        </div>
+        {aiConfig.configured ? (
+          <dl className="ai-config-details">
+            <div><dt>模型</dt><dd>{aiConfig.model}</dd></div>
+            <div><dt>接口地址</dt><dd>{aiConfig.base_url}</dd></div>
+          </dl>
+        ) : (
+          <p className="ai-config-hint">配置模型后即可使用 AI，您也可以先手动记录训练。</p>
+        )}
+        {aiConfig.has_api_key && <Button type="primary" loading={settingsBusy} onClick={() => void runSettings(async () => {
+          setAiConfig(await api('/ai-config', 'DELETE', {}));
+          aiForm.setFieldValue('api_key', undefined);
+        }, '已删除 API Key')}>删除已保存的 Key</Button>}
+      </div>
       <Form
         form={aiForm}
         layout="vertical"
@@ -776,7 +784,7 @@ export function App() {
           >
             测试连接
           </Button>
-          <Button htmlType="submit" loading={settingsBusy}>
+          <Button htmlType="submit" type="primary" loading={settingsBusy}>
             验证并保存
           </Button>
         </Space>
@@ -833,7 +841,7 @@ export function App() {
               setProfile(await api("/profile", "PUT", { ...profile, ...v }));
             }, "通用设置已保存")}>
             <Form.Item name="timezone" label="时区"><Input /></Form.Item>
-            <Button htmlType="submit" loading={settingsBusy}>保存通用设置</Button>
+            <Button htmlType="submit" type="primary" loading={settingsBusy}>保存通用设置</Button>
           </Form>
         </section>
         <section id="settings-profile">{profileForm}</section>
