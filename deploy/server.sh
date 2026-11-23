@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 022
 [[ $EUID == 0 ]] || { echo 'Run with sudo.' >&2; exit 1; }
-[[ $# == 0 || ( $# == 1 && $1 == --stop ) ]] || { echo 'Usage: server.sh [--stop]' >&2; exit 1; }
+[[ $# == 0 || ( $# == 1 && ( $1 == --start || $1 == --stop ) ) ]] || { echo 'Usage: server.sh [--start|--stop]' >&2; exit 1; }
 exec 9>/run/fnote-deploy.lock
 flock -n 9 || { echo 'Another deployment is running.' >&2; exit 1; }
 app=/opt/fnote
@@ -38,22 +38,94 @@ runtime="$app/runtime"
 mkdir -p "$runtime"
 trap 'echo "Deployment failed at line $LINENO. Inspect $runtime/server-error.log and $runtime/deploy.log; application may remain stopped." >&2' ERR
 exec > >(tee -a "$runtime/deploy.log") 2>&1
-# Check the installed release before interrupting a running service.
-[[ -x $python && -f $app/backend/scripts/local.py && -f $app/frontend/dist/index.html ]] || {
-    echo 'Installed application is incomplete. Run sudo bash deploy/setup.sh first.' >&2; exit 1;
-}
-command -v caddy >/dev/null || { echo 'Caddy is missing. Run deploy/setup.sh first.' >&2; exit 1; }
-command -v logrotate >/dev/null || { echo 'logrotate is missing. Run deploy/setup.sh first.' >&2; exit 1; }
-id fnote >/dev/null 2>&1 || { echo 'Service account is missing. Run deploy/setup.sh first.' >&2; exit 1; }
-(cd "$app/backend" && "$python" -c 'import sys, sqlite3, fastapi, uvicorn, alembic, sqlalchemy, cryptography; assert sqlite3.sqlite_version_info >= (3,51,3)') || {
-    echo 'Installed Python dependencies are invalid. Run deploy/setup.sh first.' >&2; exit 1;
-}
 key="$app/runtime/secrets/ai-config.key"
 uploaded_key="$source_root/runtime/secrets/ai-config.key"
 if [[ $source_root != "$app" && -f $uploaded_key && -f $key ]]; then
     cmp -s "$uploaded_key" "$key" || { echo 'Uploaded master key differs from the deployed key.' >&2; exit 1; }
 fi
-stop_app
+if [[ ${1:-} != --start ]]; then
+    download() {
+        curl -fSL --connect-timeout 20 --max-time 300 --speed-limit 1024 --speed-time 60 \
+            --retry 3 --retry-delay 3 --retry-all-errors "$1" -o "$2"
+    }
+    conda_channel=${FNOTE_CONDA_CHANNEL:-https://conda.anaconda.org/conda-forge}
+    pip_index=${FNOTE_PIP_INDEX:-https://pypi.org/simple}
+    npm_registry=${FNOTE_NPM_REGISTRY:-https://registry.npmjs.org}
+    apt-get update
+    apt-get install -y ca-certificates curl gnupg rsync bzip2 logrotate
+    # Official Caddy package repository. Existing Caddy configuration is preserved.
+    if ! command -v caddy >/dev/null; then
+        caddy_key=$(mktemp)
+        download https://dl.cloudsmith.io/public/caddy/stable/gpg.key "$caddy_key"
+        gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg "$caddy_key"
+        rm -- "$caddy_key"
+        download https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update
+        apt-get install -y caddy
+    fi
+    if [[ ! -x /opt/fnote-conda/bin/conda ]]; then
+        arch=$(uname -m)
+        [[ $arch == x86_64 || $arch == aarch64 ]] || { echo 'Unsupported CPU architecture.' >&2; exit 1; }
+        stage=$(mktemp -d)
+        installer="Miniforge3-Linux-${arch}.sh"
+        verify_installer() {
+            local expected actual
+            # Release checksums may name the versioned file rather than its latest alias.
+            read -r expected _ < "$stage/$installer.sha256" || return 1
+            [[ $expected =~ ^[[:xdigit:]]{64}$ ]] || return 1
+            actual=$(sha256sum "$stage/$installer") || return 1
+            [[ ${actual%% *} == "${expected,,}" ]]
+        }
+        ready=false
+        if [[ -f $source_root/runtime/installers/$installer && -f $source_root/runtime/installers/$installer.sha256 ]]; then
+            cp -- "$source_root/runtime/installers/$installer" "$source_root/runtime/installers/$installer.sha256" "$stage/"
+            verify_installer || { echo 'Uploaded Miniforge checksum failed.' >&2; exit 1; }
+            ready=true
+        else
+            # Use matching versioned assets; the unversioned installer alias has no checksum asset.
+            release=26.9.4-2
+            base=${FNOTE_MINIFORGE_BASE:-https://github.com/conda-forge/miniforge/releases/download/$release}
+            asset="Miniforge3-${release}-Linux-${arch}.sh"
+            echo "Downloading Miniforge from $base"
+            if download "$base/$asset" "$stage/$installer" && \
+               download "$base/$asset.sha256" "$stage/$installer.sha256" && verify_installer; then
+                ready=true
+            fi
+        fi
+        [[ $ready == true ]] || { echo "Cannot download Miniforge. Upload $installer and its .sha256 file to runtime/installers and retry." >&2; exit 1; }
+        bash "$stage/$installer" -b -p /opt/fnote-conda
+        rm -- "$stage/$installer" "$stage/$installer.sha256"
+        rmdir -- "$stage"
+    fi
+    stop_app
+    conda_operation=create
+    if [[ -d /opt/fnote-env/conda-meta ]]; then conda_operation=install; fi
+    /opt/fnote-conda/bin/conda "$conda_operation" -y -p /opt/fnote-env --override-channels -c "$conda_channel" 'python=3.12' 'sqlite>=3.51.3' 'nodejs=22' 'pnpm=10' pip
+    "$python" -c 'import sqlite3; assert sqlite3.sqlite_version_info >= (3,51,3), sqlite3.sqlite_version'
+    id fnote >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fnote --shell /usr/sbin/nologin fnote
+    install -d -o fnote -g fnote -m 750 /var/lib/fnote /var/backups/fnote
+    install -d -o fnote -g fnote -m 750 "$app/runtime"
+    install -d -m 755 "$app"
+    if [[ $source_root != "$app" ]]; then
+        rsync -a --exclude=.git --exclude=node_modules --exclude=.venv --exclude=runtime --exclude=__pycache__ --exclude='*.db*' --exclude=.env "$source_root/" "$app/"
+    fi
+    "$python" -m pip install --index-url "$pip_index" --retries 3 --timeout 60 -r "$app/requirements.txt"
+    export PATH="/opt/fnote-env/bin:$PATH"
+    (cd "$app/frontend" && pnpm install --registry "$npm_registry" --frozen-lockfile && pnpm build)
+    chmod 755 "$app" "$app/frontend"
+    chmod -R a+rX "$app/backend" "$app/frontend/dist"
+fi
+# Verify the installed release before starting it.
+[[ -x $python && -f $app/backend/scripts/local.py && -f $app/frontend/dist/index.html ]] || {
+    echo 'Installed application is incomplete. Run sudo bash deploy/server.sh first.' >&2; exit 1;
+}
+command -v caddy >/dev/null || { echo 'Caddy is missing. Run deploy/server.sh first.' >&2; exit 1; }
+command -v logrotate >/dev/null || { echo 'logrotate is missing. Run deploy/server.sh first.' >&2; exit 1; }
+id fnote >/dev/null 2>&1 || { echo 'Service account is missing. Run deploy/server.sh first.' >&2; exit 1; }
+(cd "$app/backend" && "$python" -c 'import sys, sqlite3, fastapi, uvicorn, alembic, sqlalchemy, cryptography; assert sqlite3.sqlite_version_info >= (3,51,3)') || {
+    echo 'Installed Python dependencies are invalid. Run deploy/server.sh first.' >&2; exit 1;
+}
+if [[ ${1:-} == --start ]]; then stop_app; fi
 install -d -o fnote -g fnote -m 750 /var/lib/fnote /var/lib/fnote/runtime /var/backups/fnote
 install -d -o fnote -g fnote -m 750 "$app/runtime"
 runtime_pattern=$(printf '%s' "$runtime" | sed 's/[\\&|]/\\&/g')
