@@ -1,0 +1,47 @@
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest*-tmp/
+.ruff_cache/
+.coverage
+htmlcov/
+# Local databases, credentials and runtime files
+*.db
+*.key
+*.pem
+*.pfx
+*.keystore
+*.jks
+*.p12
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.db-wal
+*.db-shm
+*.db.importing
+fnote-*.partial
+.env
+.env.*
+!.env.example
+*.log
+docs/deployment.md
+# Dependencies and generated assets
+node_modules/
+frontend/dist/
+runtime/
+.pnpm-store/
+.screenshots/
+playwright-report/
+test-results/
+*.tsbuildinfo
+# Editor and OS files
+.idea/
+.trae/
+.DS_Store
+Thumbs.db
