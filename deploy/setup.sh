@@ -19,9 +19,12 @@ stop_app() {
 source /etc/os-release
 [[ $ID == ubuntu && $VERSION_ID == 24.04 ]] || { echo 'Ubuntu 24.04 required.' >&2; exit 1; }
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+runtime="$app/runtime"
 [[ -f $source_root/backend/scripts/local.py ]] || { echo 'Upload the complete project.' >&2; exit 1; }
-trap 'echo "Deployment failed at line $LINENO. Inspect journalctl -u fnote and /var/log/fnote-deploy.log; application may remain stopped." >&2' ERR
-exec > >(tee -a /var/log/fnote-deploy.log) 2>&1
+install -d -m 755 "$app"
+mkdir -p "$runtime"
+trap 'echo "Deployment failed at line $LINENO. Inspect $runtime/server-error.log and $runtime/deploy.log; application may remain stopped." >&2' ERR
+exec > >(tee -a "$runtime/deploy.log") 2>&1
 download() {
     curl -fSL --connect-timeout 20 --max-time 300 --speed-limit 1024 --speed-time 60 \
         --retry 3 --retry-delay 3 --retry-all-errors "$1" -o "$2"
@@ -30,7 +33,7 @@ conda_channel=${FNOTE_CONDA_CHANNEL:-https://conda.anaconda.org/conda-forge}
 pip_index=${FNOTE_PIP_INDEX:-https://pypi.org/simple}
 npm_registry=${FNOTE_NPM_REGISTRY:-https://registry.npmjs.org}
 apt-get update
-apt-get install -y ca-certificates curl gnupg rsync bzip2
+apt-get install -y ca-certificates curl gnupg rsync bzip2 logrotate
 # Official Caddy package repository. Existing Caddy configuration is preserved.
 if ! command -v caddy >/dev/null; then
     caddy_key=$(mktemp)
@@ -81,11 +84,17 @@ if [[ -d /opt/fnote-env/conda-meta ]]; then conda_operation=install; fi
 /opt/fnote-conda/bin/conda "$conda_operation" -y -p /opt/fnote-env --override-channels -c "$conda_channel" 'python=3.12' 'sqlite>=3.51.3' 'nodejs=22' 'pnpm=10' pip
 "$python" -c 'import sqlite3; assert sqlite3.sqlite_version_info >= (3,51,3), sqlite3.sqlite_version'
 id fnote >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fnote --shell /usr/sbin/nologin fnote
-install -d -o fnote -g fnote -m 750 /var/lib/fnote /var/lib/fnote/runtime /var/backups/fnote
+install -d -o fnote -g fnote -m 750 /var/lib/fnote /var/backups/fnote
+install -d -o fnote -g fnote -m 750 "$app/runtime"
 install -d -m 755 "$app"
 if [[ $source_root != "$app" ]]; then
     rsync -a --exclude=.git --exclude=node_modules --exclude=.venv --exclude=runtime --exclude=__pycache__ --exclude='*.db*' --exclude=.env "$source_root/" "$app/"
 fi
+runtime_pattern=$(printf '%s' "$runtime" | sed 's/[\\&|]/\\&/g')
+sed "s|@RUNTIME@|$runtime_pattern|g" "$source_root/deploy/fnote.logrotate" > /etc/logrotate.d/fnote
+chown root:root /etc/logrotate.d/fnote
+chmod 644 /etc/logrotate.d/fnote
+systemctl enable --now logrotate.timer
 "$python" -m pip install --index-url "$pip_index" --retries 3 --timeout 60 -r "$app/requirements.txt"
 export PATH="/opt/fnote-env/bin:$PATH"
 (cd "$app/frontend" && pnpm install --registry "$npm_registry" --frozen-lockfile && pnpm build)

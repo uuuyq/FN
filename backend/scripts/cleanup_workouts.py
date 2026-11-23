@@ -12,10 +12,12 @@ def main():
     root = Path(__file__).resolve().parents[2]
     runtime = Path(os.getenv('FNOTE_RUNTIME', str(root / 'runtime')))
     runtime.mkdir(exist_ok=True)
+    # systemd captures stderr on Ubuntu; write directly to a file only locally.
+    handler = (logging.StreamHandler() if os.getenv('FNOTE_LOG_STDERR') == '1'
+               else RotatingFileHandler(runtime / 'workout-cleanup.log',
+                                        maxBytes=1048576, backupCount=3, encoding='utf-8'))
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s',
-                        handlers=[RotatingFileHandler(runtime / 'workout-cleanup.log',
-                                  maxBytes=1048576, backupCount=3, encoding='utf-8'),
-                                  logging.StreamHandler()])
+                        handlers=[handler])
     engine = None
     try:
         # Use the application's database explicitly; never create an empty database

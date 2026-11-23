@@ -40,7 +40,7 @@ def tool_result(ok, data=None, error=None):
     if data is not None:
         result['data'] = data
     if error is not None:
-        result['error'] = ToolError.model_validate(error).model_dump()
+        result['error'] = ToolError.model_validate(error).model_dump(exclude_none=True)
     return result
 
 

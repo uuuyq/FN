@@ -1,8 +1,10 @@
 """Serial scheduling using explicit tool execution strategies."""
 import json
+from contextlib import nullcontext
 
 from fastapi import HTTPException
 from pydantic import ValidationError
+from ...errors import exception_detail
 
 from ..contracts import ExecutionResult, ToolError
 from .. import actions
@@ -19,6 +21,19 @@ def _error(code, message, field=None):
 
 
 def run(ctx, registry, name, arguments):
+    # A failed flush must roll back before the runner stores feedback and continues.
+    from ...core.diagnostics import report_failure
+    try:
+        with ctx.db.begin_nested() if ctx.db is not None else nullcontext():
+            return _run(ctx, registry, name, arguments)
+    except HTTPException:
+        raise
+    except Exception as error:
+        report_failure('tool_execution', error)
+        return ExecutionResult(error=ToolError.model_validate(exception_detail(error)))
+
+
+def _run(ctx, registry, name, arguments):
     """Schedule one call and return a unified outcome. Correctable errors return to the model."""
     tool = registry.get(name)
     if tool is None:

@@ -5,6 +5,8 @@ the original business function through the registry, re-checks ownership and
 versions in the same transaction, and runs the change inside a SAVEPOINT.
 """
 from fastapi import HTTPException
+from ..core.diagnostics import report_failure
+from ..errors import exception_detail
 from sqlalchemy import select
 
 from ..models import ConversationAction, Turn, now
@@ -106,10 +108,11 @@ def apply(db, user_id, object_id, operation, expected_version):
             event_data={'action_id': action.id, 'operation': action.operation,
                         'error': {'code': detail.get('code', 'internal_error')}})
         return action_view(action)
-    except Exception:
+    except Exception as error:
+        report_failure('action_confirmation', error)
         action = db.get(ConversationAction, object_id)
         action.status, action.completed_at, action.version = 'failed', now(), action.version + 1
-        action.result = {'error': {'code': 'internal_error', 'message': '执行失败。'}}
+        action.result = {'error': exception_detail(error)}
         add_message(db, action.conversation_id, action.turn_id, 'event',
             content='待确认操作执行失败，请稍后重试。',
             event_kind='action_failed', event_data={'action_id': action.id, 'operation': action.operation})

@@ -58,6 +58,8 @@ Ubuntu 24.04 使用两个脚本，需要 sudo 权限。`deploy/setup.sh` 安装�
 
 `deploy/server.sh` 使用已安装的代码和环境，准备数据库并通过 systemd 启动应用和维护任务，配置 Caddy HTTPS。再次启动不会安装依赖或重新构建前端。代码和依赖有更新时，先重新执行 `setup.sh`。
 
+应用和维护服务通过 `PrivateTmp=true` 获得可写的独立临时目录，供 SQLite 等组件使用；配合 `ProtectSystem=strict` 保留文件系统保护。更新此配置后需重新执行 `server.sh`，仅重启旧服务不会更新配置。
+
 当前服务器脚本面向已有数据库的迁移，首次部署前需停止原应用，并准备数据库及存在的 WAL/SHM 文件。已有加密配置时，还需将主密钥放到上传项目的 `runtime/secrets/ai-config.key`。运行前检查脚本中的域名，并配置 DNS 和公网 TCP 80/443。
 
 ```bash
@@ -67,6 +69,14 @@ sudo bash deploy/setup.sh
 sudo bash deploy/server.sh
 # 停止应用
 sudo bash deploy/server.sh --stop
+```
+
+Ubuntu 日志统一保存在 `/opt/fnote/runtime/`：`server.log` 为应用标准输出，`server-error.log` 为应用错误输出，`deploy.log` 为安装和部署日志。清理、备份任务的标准输出和错误分别合并到 `cleanup.log`、`backup.log`；清理程序不再额外写入 `workout-cleanup.log`。更新已有部署后，需重新执行 `server.sh` 才会更新服务日志路径和轮转配置；历史 journal 和旧日志文件不自动迁移或删除。
+
+部署脚本安装并启用系统 `logrotate.timer`，每天清空上述应用、部署和任务输出日志，不保留归档、不压缩，空日志跳过。原文件保留供进程继续写入，无需重启应用。Windows 本地的 `workout-cleanup.log` 沿用程序自身的 1 MB、3 份备份轮转策略。
+
+```bash
+sudo tail -n 100 -f /opt/fnote/runtime/server-error.log
 ```
 
 Android 构建、签名和设备验证见 [Android 说明](android/README.md)。

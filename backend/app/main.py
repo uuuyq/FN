@@ -44,10 +44,14 @@ def create_app(engine=None):
 
     @app.exception_handler(Exception)
     async def unexpected_error(_, error):
+        from .core.diagnostics import report_failure
+        report_failure('http_request', error)
         return JSONResponse(status_code=500, content={'detail': error_detail('internal_error')})
 
     @app.exception_handler(OperationalError)
     async def busy(_, error):
+        from .core.diagnostics import report_failure
+        report_failure('database_request', error)
         if 'locked' in str(error).lower() or 'busy' in str(error).lower():
             return JSONResponse(status_code=503, content={'detail': error_detail('database_busy', retryable=True)}, headers={'Retry-After': '1'})
         return JSONResponse(status_code=500, content={'detail': error_detail('database_error')})

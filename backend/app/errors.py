@@ -1,4 +1,7 @@
 """Public error messages. Never expose raw exception or provider text."""
+import sqlite3
+
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 MESSAGES = {
     "operation_already_undone": "该操作已经撤销。",
@@ -66,3 +69,18 @@ def error_message(code):
 
 def error_detail(code, **details):
     return {**details, 'code': code, 'message': error_message(code)}
+
+
+def exception_detail(error):
+    """Map execution failures to existing public errors; keep diagnostics in logs."""
+    original = getattr(error, 'orig', error)
+    if isinstance(error, IntegrityError) or isinstance(original, sqlite3.IntegrityError):
+        return error_detail('constraint_conflict')
+    if isinstance(error, DBAPIError) or isinstance(original, sqlite3.Error):
+        name = getattr(original, 'sqlite_errorname', '')
+        if isinstance(name, str) and any(
+                name == prefix or name.startswith(prefix + '_')
+                for prefix in ('SQLITE_BUSY', 'SQLITE_LOCKED')):
+            return error_detail('database_busy')
+        return error_detail('database_error')
+    return error_detail('internal_error')

@@ -184,11 +184,11 @@ export function ConversationActionCard({
       ) : (
         <details><summary>查看详情</summary><Details action={action} names={names} /></details>
       )}
-      {failed && action.result?.error?.message && (
+      {failed && (
         <Alert
           type="error"
           showIcon
-          message={action.result.error.message}
+          message="执行失败"
           style={{ marginTop: 8 }}
         />
       )}

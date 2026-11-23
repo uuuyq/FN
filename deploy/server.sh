@@ -30,17 +30,20 @@ fi
 source /etc/os-release
 [[ $ID == ubuntu && $VERSION_ID == 24.04 ]] || { echo 'Ubuntu 24.04 required.' >&2; exit 1; }
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
+runtime="$app/runtime"
 [[ -f $source_root/backend/scripts/local.py ]] || { echo 'Upload the complete project.' >&2; exit 1; }
 [[ -f /var/lib/fnote/fnote.db || -f $source_root/backend/data/fnote.db ]] || {
     echo 'Missing migration database: backend/data/fnote.db. Stop the local application before uploading.' >&2; exit 1;
 }
-trap 'echo "Deployment failed at line $LINENO. Inspect journalctl -u fnote and /var/log/fnote-deploy.log; application may remain stopped." >&2' ERR
-exec > >(tee -a /var/log/fnote-deploy.log) 2>&1
+mkdir -p "$runtime"
+trap 'echo "Deployment failed at line $LINENO. Inspect $runtime/server-error.log and $runtime/deploy.log; application may remain stopped." >&2' ERR
+exec > >(tee -a "$runtime/deploy.log") 2>&1
 # Check the installed release before interrupting a running service.
 [[ -x $python && -f $app/backend/scripts/local.py && -f $app/frontend/dist/index.html ]] || {
     echo 'Installed application is incomplete. Run sudo bash deploy/setup.sh first.' >&2; exit 1;
 }
 command -v caddy >/dev/null || { echo 'Caddy is missing. Run deploy/setup.sh first.' >&2; exit 1; }
+command -v logrotate >/dev/null || { echo 'logrotate is missing. Run deploy/setup.sh first.' >&2; exit 1; }
 id fnote >/dev/null 2>&1 || { echo 'Service account is missing. Run deploy/setup.sh first.' >&2; exit 1; }
 (cd "$app/backend" && "$python" -c 'import sys, sqlite3, fastapi, uvicorn, alembic, sqlalchemy, cryptography; assert sqlite3.sqlite_version_info >= (3,51,3)') || {
     echo 'Installed Python dependencies are invalid. Run deploy/setup.sh first.' >&2; exit 1;
@@ -52,6 +55,12 @@ if [[ $source_root != "$app" && -f $uploaded_key && -f $key ]]; then
 fi
 stop_app
 install -d -o fnote -g fnote -m 750 /var/lib/fnote /var/lib/fnote/runtime /var/backups/fnote
+install -d -o fnote -g fnote -m 750 "$app/runtime"
+runtime_pattern=$(printf '%s' "$runtime" | sed 's/[\\&|]/\\&/g')
+sed "s|@RUNTIME@|$runtime_pattern|g" "$source_root/deploy/fnote.logrotate" > /etc/logrotate.d/fnote
+chown root:root /etc/logrotate.d/fnote
+chmod 644 /etc/logrotate.d/fnote
+systemctl enable --now logrotate.timer
 cat > /etc/fnote.env <<'ENV'
 FNOTE_DATABASE=/var/lib/fnote/fnote.db
 FNOTE_RUNTIME=/var/lib/fnote/runtime
@@ -77,7 +86,6 @@ if [[ ! -f /var/lib/fnote/fnote.db ]]; then
     rm -f -- "$import_dir/fnote.db" "$import_dir/fnote.db-wal" "$import_dir/fnote.db-shm"
     rmdir -- "$import_dir"
 fi
-install -d -m 755 "$app/runtime"
 install -d -o fnote -g fnote -m 700 "$app/runtime/secrets"
 key="$app/runtime/secrets/ai-config.key"
 uploaded_key="$source_root/runtime/secrets/ai-config.key"
@@ -95,7 +103,8 @@ fi
 run_app prepare
 chown root:fnote "$key"
 chmod 640 "$key"
-cat > /etc/systemd/system/fnote.service <<'UNIT'
+log_runtime=${runtime//%/%%}
+cat > /etc/systemd/system/fnote.service <<UNIT
 [Unit]
 Description=FNote application
 After=network.target
@@ -105,14 +114,18 @@ Group=fnote
 WorkingDirectory=/opt/fnote/backend
 EnvironmentFile=/etc/fnote.env
 ExecStart=/opt/fnote-env/bin/python -m scripts.local serve
+StandardOutput=append:$log_runtime/server.log
+StandardError=append:$log_runtime/server-error.log
+Environment=PYTHONUNBUFFERED=1
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
 UMask=0027
 NoNewPrivileges=true
 ProtectSystem=strict
+PrivateTmp=true
 ProtectHome=true
-ReadWritePaths=/var/lib/fnote /var/backups/fnote
+ReadWritePaths=/var/lib/fnote /var/backups/fnote /opt/fnote/runtime
 [Install]
 WantedBy=multi-user.target
 UNIT
@@ -130,12 +143,17 @@ Group=fnote
 WorkingDirectory=/opt/fnote/backend
 EnvironmentFile=/etc/fnote.env
 ExecStart=/opt/fnote-env/bin/python -m $operation
+StandardOutput=append:$log_runtime/$job.log
+StandardError=inherit
+Environment=PYTHONUNBUFFERED=1
+Environment=FNOTE_LOG_STDERR=1
 UMask=0027
 TimeoutStartSec=30min
 NoNewPrivileges=true
 ProtectSystem=strict
+PrivateTmp=true
 ProtectHome=true
-ReadWritePaths=/var/lib/fnote /var/backups/fnote
+ReadWritePaths=/var/lib/fnote /var/backups/fnote /opt/fnote/runtime
 UNIT
     cat > "/etc/systemd/system/fnote-$job.timer" <<UNIT
 [Unit]

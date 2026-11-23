@@ -191,7 +191,9 @@ async def run(app, turn_id, user_id, token):
     except asyncio.CancelledError:
         _mark(engine, turn_id, user_id, token, 'interrupted', 'execution_expired')
         raise
-    except Exception:
+    except Exception as error:
+        from ..core.diagnostics import report_failure
+        report_failure('agent_turn', error)
         _mark(engine, turn_id, user_id, token, 'failed', 'model_failed')
 
 
