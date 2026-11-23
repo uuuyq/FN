@@ -36,77 +36,22 @@ source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 }
 trap 'echo "Deployment failed at line $LINENO. Inspect journalctl -u fnote and /var/log/fnote-deploy.log; application may remain stopped." >&2' ERR
 exec > >(tee -a /var/log/fnote-deploy.log) 2>&1
-download() {
-    curl -fSL --connect-timeout 20 --max-time 300 --speed-limit 1024 --speed-time 60 \
-        --retry 3 --retry-delay 3 --retry-all-errors "$1" -o "$2"
+# Check the installed release before interrupting a running service.
+[[ -x $python && -f $app/backend/scripts/local.py && -f $app/frontend/dist/index.html ]] || {
+    echo 'Installed application is incomplete. Run sudo bash deploy/setup.sh first.' >&2; exit 1;
 }
-conda_channel=${FNOTE_CONDA_CHANNEL:-https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge}
-pip_index=${FNOTE_PIP_INDEX:-https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple}
-npm_registry=${FNOTE_NPM_REGISTRY:-https://registry.npmmirror.com}
-apt-get update
-apt-get install -y ca-certificates curl gnupg rsync bzip2
-# Official Caddy package repository. Existing Caddy configuration is preserved.
-if ! command -v caddy >/dev/null; then
-    caddy_key=$(mktemp)
-    download https://dl.cloudsmith.io/public/caddy/stable/gpg.key "$caddy_key"
-    gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg "$caddy_key"
-    rm -- "$caddy_key"
-    download https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt /etc/apt/sources.list.d/caddy-stable.list
-    apt-get update
-    apt-get install -y caddy
-fi
-if [[ ! -x /opt/fnote-conda/bin/conda ]]; then
-    arch=$(uname -m)
-    [[ $arch == x86_64 || $arch == aarch64 ]] || { echo 'Unsupported CPU architecture.' >&2; exit 1; }
-    stage=$(mktemp -d)
-    installer="Miniforge3-Linux-${arch}.sh"
-    verify_installer() {
-        local expected actual
-        # Release checksums may name the versioned file rather than its latest alias.
-        read -r expected _ < "$stage/$installer.sha256" || return 1
-        [[ $expected =~ ^[[:xdigit:]]{64}$ ]] || return 1
-        actual=$(sha256sum "$stage/$installer") || return 1
-        [[ ${actual%% *} == "${expected,,}" ]]
-    }
-    ready=false
-    if [[ -f $source_root/runtime/installers/$installer && -f $source_root/runtime/installers/$installer.sha256 ]]; then
-        cp -- "$source_root/runtime/installers/$installer" "$source_root/runtime/installers/$installer.sha256" "$stage/"
-        verify_installer || { echo 'Uploaded Miniforge checksum failed.' >&2; exit 1; }
-        ready=true
-    else
-        for base in "${FNOTE_MINIFORGE_BASE:-https://mirrors.nju.edu.cn/github-release/conda-forge/miniforge/LatestRelease}" \
-                    https://github.com/conda-forge/miniforge/releases/latest/download; do
-            echo "Downloading Miniforge from $base"
-            if download "$base/$installer" "$stage/$installer" && \
-               download "$base/$installer.sha256" "$stage/$installer.sha256" && verify_installer; then
-                ready=true
-                break
-            fi
-            echo 'Miniforge download or checksum failed; trying the next source.' >&2
-        done
-    fi
-    [[ $ready == true ]] || { echo "Cannot download Miniforge. Upload $installer and its .sha256 file to runtime/installers and retry." >&2; exit 1; }
-    bash "$stage/$installer" -b -p /opt/fnote-conda
-    rm -- "$stage/$installer" "$stage/$installer.sha256"
-    rmdir -- "$stage"
+command -v caddy >/dev/null || { echo 'Caddy is missing. Run deploy/setup.sh first.' >&2; exit 1; }
+id fnote >/dev/null 2>&1 || { echo 'Service account is missing. Run deploy/setup.sh first.' >&2; exit 1; }
+(cd "$app/backend" && "$python" -c 'import sys, sqlite3, fastapi, uvicorn, alembic, sqlalchemy, cryptography; assert sqlite3.sqlite_version_info >= (3,51,3)') || {
+    echo 'Installed Python dependencies are invalid. Run deploy/setup.sh first.' >&2; exit 1;
+}
+key="$app/runtime/secrets/ai-config.key"
+uploaded_key="$source_root/runtime/secrets/ai-config.key"
+if [[ $source_root != "$app" && -f $uploaded_key && -f $key ]]; then
+    cmp -s "$uploaded_key" "$key" || { echo 'Uploaded master key differs from the deployed key.' >&2; exit 1; }
 fi
 stop_app
-conda_operation=create
-if [[ -d /opt/fnote-env/conda-meta ]]; then conda_operation=install; fi
-/opt/fnote-conda/bin/conda "$conda_operation" -y -p /opt/fnote-env --override-channels -c "$conda_channel" 'python=3.12' 'sqlite>=3.51.3' 'nodejs=22' 'pnpm=10' pip
-"$python" -c 'import sqlite3; assert sqlite3.sqlite_version_info >= (3,51,3), sqlite3.sqlite_version'
-id fnote >/dev/null 2>&1 || useradd --system --home-dir /var/lib/fnote --shell /usr/sbin/nologin fnote
 install -d -o fnote -g fnote -m 750 /var/lib/fnote /var/lib/fnote/runtime /var/backups/fnote
-stop_app
-install -d -m 755 "$app"
-if [[ $source_root != "$app" ]]; then
-    rsync -a --exclude=.git --exclude=node_modules --exclude=.venv --exclude=runtime --exclude=__pycache__ --exclude='*.db*' --exclude=.env "$source_root/" "$app/"
-fi
-"$python" -m pip install --index-url "$pip_index" --retries 3 --timeout 60 -r "$app/requirements.txt"
-export PATH="/opt/fnote-env/bin:$PATH"
-(cd "$app/frontend" && pnpm install --registry "$npm_registry" --frozen-lockfile && pnpm build)
-chmod 755 "$app" "$app/frontend"
-chmod -R a+rX "$app/backend" "$app/frontend/dist"
 cat > /etc/fnote.env <<'ENV'
 FNOTE_DATABASE=/var/lib/fnote/fnote.db
 FNOTE_RUNTIME=/var/lib/fnote/runtime
@@ -204,9 +149,14 @@ UNIT
 done
 systemctl daemon-reload
 systemctl enable --now fnote.service
+health_check() {
+    local response
+    response=$(curl -fsS --connect-timeout 2 --max-time 5 "$1" 2>/dev/null) || return 1
+    printf '%s' "$response" | "$python" -c 'import sys,json; assert json.load(sys.stdin)["status"] == "ok"' 2>/dev/null
+}
 ready=false
 for attempt in {1..40}; do
-    if curl -fsS http://127.0.0.1:8765/api/health | "$python" -c 'import sys,json; assert json.load(sys.stdin)["status"] == "ok"'; then ready=true; break; fi
+    if health_check http://127.0.0.1:8765/api/health; then ready=true; break; fi
     sleep 1
 done
 [[ $ready == true ]] || { systemctl disable --now fnote.service; echo 'Health check failed.' >&2; exit 1; }
@@ -223,5 +173,20 @@ caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
 systemctl enable --now caddy
 systemctl reload caddy
 systemctl enable --now fnote-cleanup.timer fnote-backup.timer
-curl --retry 5 --retry-delay 5 --retry-all-errors -fsS https://uuuf.online/api/health
+echo 'Waiting up to 180 seconds for HTTPS readiness and initial certificate issuance...'
+ready=false
+deadline=$((SECONDS + 180))
+while (( SECONDS < deadline )); do
+    if health_check https://uuuf.online/api/health; then ready=true; break; fi
+    if ! systemctl is-active --quiet caddy; then
+        echo 'Caddy is not running.' >&2
+        break
+    fi
+    sleep 3
+done
+if [[ $ready != true ]]; then
+    echo 'HTTPS is not ready. Application and Caddy remain running; inspect certificate issuance, DNS and TCP 80/443, then retry the health URL.' >&2
+    journalctl -u caddy -n 40 --no-pager >&2 || true
+    exit 1
+fi
 echo 'Deployed: https://uuuf.online. Stop: sudo bash deploy/server.sh --stop'

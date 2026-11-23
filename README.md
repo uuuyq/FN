@@ -54,12 +54,18 @@ API Key 使用 Fernet 加密保存，默认主密钥文件为项目下的 `runti
 
 ## Ubuntu 部署与 Android
 
-Ubuntu 24.04 的部署入口是 `deploy/server.sh`，需要 sudo 权限。脚本安装独立环境，使用 systemd 管理应用和维护任务，通过 Caddy 提供 HTTPS。Miniforge、Conda、Python 和前端依赖默认使用国内镜像。
+Ubuntu 24.04 使用两个脚本，需要 sudo 权限。`deploy/setup.sh` 安装或更新独立环境、同步代码到 `/opt/fnote`、安装依赖并构建前端。Miniforge、Conda、Python 和前端依赖默认使用官方源，支持预先上传 Miniforge 安装器及 SHA256 文件。安装更新会停止已有应用，完成后执行启动脚本。
+
+`deploy/server.sh` 使用已安装的代码和环境，准备数据库并通过 systemd 启动应用和维护任务，配置 Caddy HTTPS。再次启动不会安装依赖或重新构建前端。代码和依赖有更新时，先重新执行 `setup.sh`。
 
 当前服务器脚本面向已有数据库的迁移，首次部署前需停止原应用，并准备数据库及存在的 WAL/SHM 文件。已有加密配置时，还需将主密钥放到上传项目的 `runtime/secrets/ai-config.key`。运行前检查脚本中的域名，并配置 DNS 和公网 TCP 80/443。
 
 ```bash
+# 首次安装或更新代码、依赖
+sudo bash deploy/setup.sh
+# 启动或重新部署已有版本
 sudo bash deploy/server.sh
+# 停止应用
 sudo bash deploy/server.sh --stop
 ```
 
