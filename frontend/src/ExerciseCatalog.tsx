@@ -72,7 +72,7 @@ export function ExerciseCatalog({
             (value) => ({ value, label: value }),
           )}
         />
-        <Button onClick={create}>新增动作</Button>
+        <Button type="primary" onClick={create}>新增动作</Button>
       </div>
       <div className="catalog-categories" aria-label="动作分类">
         {[

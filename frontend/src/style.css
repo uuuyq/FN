@@ -266,6 +266,16 @@ header {
   width: 32px;
   color: #9c9fa5;
 }
+.set-table th:nth-child(1),
+.set-table td:nth-child(1),
+.set-table th:nth-child(3),
+.set-table td:nth-child(3),
+.set-table th:nth-child(4),
+.set-table td:nth-child(4),
+.group > .ant-typography,
+.group .ant-input-number-input {
+  text-align: center;
+}
 @keyframes date-emerge {
   from {
     opacity: 0;
@@ -956,6 +966,10 @@ button:focus-visible {
   }
 }
 
+.ant-btn.settings-action { background: #f3f4f6; box-shadow: none; }
+.ant-btn.settings-action:not(:disabled):hover { background: #e5e7eb; }
+.ant-btn.settings-action.ant-btn-dangerous { background: #fff; }
+.ant-btn.settings-action.ant-btn-dangerous:not(:disabled):hover { background: #fff; }
 .ai-config-summary { min-width: 0; margin-bottom: 24px; padding: 16px; background: #f7f8fa; border: 1px solid #e5e7eb; border-radius: 12px; }
 .ai-config-summary-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; justify-content: space-between; }
 .ai-config-status { color: #626b78; font-size: 12px; }

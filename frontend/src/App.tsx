@@ -687,7 +687,7 @@ export function App() {
       <Form.Item name="history_workout_count" label="参考训练次数">
         <InputNumber min={1} max={50} />
       </Form.Item>
-      <Button htmlType="submit" type="primary" loading={settingsBusy}>
+      <Button htmlType="submit" className="settings-action" loading={settingsBusy}>
         保存个人条件
       </Button>
     </Form>
@@ -709,7 +709,7 @@ export function App() {
         ) : (
           <p className="ai-config-hint">配置模型后即可使用 AI，您也可以先手动记录训练。</p>
         )}
-        {aiConfig.has_api_key && <Button type="primary" loading={settingsBusy} onClick={() => void runSettings(async () => {
+        {aiConfig.has_api_key && <Button danger className="settings-action" loading={settingsBusy} onClick={() => void runSettings(async () => {
           setAiConfig(await api('/ai-config', 'DELETE', {}));
           aiForm.setFieldValue('api_key', undefined);
         }, '已删除 API Key')}>删除已保存的 Key</Button>}
@@ -784,7 +784,7 @@ export function App() {
           >
             测试连接
           </Button>
-          <Button htmlType="submit" type="primary" loading={settingsBusy}>
+          <Button htmlType="submit" className="settings-action" loading={settingsBusy}>
             验证并保存
           </Button>
         </Space>
@@ -841,7 +841,7 @@ export function App() {
               setProfile(await api("/profile", "PUT", { ...profile, ...v }));
             }, "通用设置已保存")}>
             <Form.Item name="timezone" label="时区"><Input /></Form.Item>
-            <Button htmlType="submit" type="primary" loading={settingsBusy}>保存通用设置</Button>
+            <Button htmlType="submit" className="settings-action" loading={settingsBusy}>保存通用设置</Button>
           </Form>
         </section>
         <section id="settings-profile">{profileForm}</section>
@@ -889,7 +889,7 @@ export function App() {
             >
               <Input.Password autoComplete="new-password" />
             </Form.Item>
-            <Button htmlType="submit" type="primary" loading={settingsBusy}>
+            <Button htmlType="submit" className="settings-action" loading={settingsBusy}>
               保存账号信息
             </Button>
           </Form>
